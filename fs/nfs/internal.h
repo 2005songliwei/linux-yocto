@@ -77,6 +77,7 @@ struct nfs_client_initdata {
 	struct net *net;
 	const struct rpc_timeout *timeparms;
 	const struct cred *cred;
+	int nfs_prog;
 };
 
 /*
@@ -88,6 +89,8 @@ struct nfs_parsed_mount_data {
 	unsigned int		timeo, retrans;
 	unsigned int		acregmin, acregmax,
 				acdirmin, acdirmax;
+	int			nfs_prog;
+	int			mount_prog;
 	unsigned int		namlen;
 	unsigned int		options;
 	unsigned int		bsize;
@@ -145,11 +148,11 @@ struct nfs_mount_info {
 	struct nfs_fh *mntfh;
 };
 
-extern int nfs_mount(struct nfs_mount_request *info);
+extern int nfs_mount(struct nfs_mount_request *info, int prog);
 extern void nfs_umount(const struct nfs_mount_request *info);
 
 /* client.c */
-extern const struct rpc_program nfs_program;
+extern struct rpc_program nfs_program;
 extern void nfs_clients_init(struct net *net);
 extern void nfs_clients_exit(struct net *net);
 extern struct nfs_client *nfs_alloc_client(const struct nfs_client_initdata *);
