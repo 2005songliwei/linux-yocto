@@ -413,7 +413,7 @@ endif
 archclean:
 	$(Q)$(MAKE) $(clean)=$(boot)
 
-archprepare: checkbin
+archprepare: checkbin arch/powerpc/lib/crtsavres.o
 
 archheaders:
 	$(Q)$(MAKE) $(build)=arch/powerpc/kernel/syscalls all
