@@ -99,6 +99,7 @@ config SND_SOC_ALL_CODECS
 	imply SND_SOC_ICS43432
 	imply SND_SOC_INNO_RK3036
 	imply SND_SOC_ISABELLE
+	imply SND_SOC_I_SABRE_CODEC
 	imply SND_SOC_JZ4740_CODEC
 	imply SND_SOC_JZ4725B_CODEC
 	imply SND_SOC_JZ4770_CODEC
@@ -201,6 +202,7 @@ config SND_SOC_ALL_CODECS
 	imply SND_SOC_TLV320ADCX140
 	imply SND_SOC_TLV320AIC23_I2C
 	imply SND_SOC_TLV320AIC23_SPI
+	imply SND_SOC_TAS5713
 	imply SND_SOC_TLV320AIC26
 	imply SND_SOC_TLV320AIC31XX
 	imply SND_SOC_TLV320AIC32X4_I2C
@@ -1301,6 +1303,9 @@ config SND_SOC_TFA9879
 	tristate "NXP Semiconductors TFA9879 amplifier"
 	depends on I2C
 
+config SND_SOC_TAS5713
+	tristate
+
 config SND_SOC_TLV320AIC23
 	tristate
 
@@ -1720,6 +1725,10 @@ config SND_SOC_NAU8825
 
 config SND_SOC_TPA6130A2
 	tristate "Texas Instruments TPA6130A2 headphone amplifier"
+	depends on I2C
+
+config SND_SOC_I_SABRE_CODEC
+	tristate "Audiophonics I-SABRE Codec"
 	depends on I2C
 
 endmenu
