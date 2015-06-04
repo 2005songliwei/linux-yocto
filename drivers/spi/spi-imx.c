@@ -27,6 +27,7 @@
 #include <linux/platform_data/spi-imx.h>
 
 #define DRIVER_NAME "spi_imx"
+#include <linux/pinctrl/consumer.h>
 
 static bool use_dma = true;
 module_param(use_dma, bool, 0644);
@@ -1825,11 +1826,31 @@ static int spi_imx_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int spi_imx_suspend(struct device *dev)
+{
+	pinctrl_pm_select_sleep_state(dev);
+	return 0;
+}
+
+static int spi_imx_resume(struct device *dev)
+{
+	pinctrl_pm_select_default_state(dev);
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(imx_spi_pm, spi_imx_suspend, spi_imx_resume);
+#define IMX_SPI_PM       (&imx_spi_pm)
+#else
+#define IMX_SPI_PM       NULL
+#endif
+
 static struct platform_driver spi_imx_driver = {
 	.driver = {
 		   .name = DRIVER_NAME,
 		   .of_match_table = spi_imx_dt_ids,
-		   },
+		   .pm = IMX_SPI_PM,
+	},
 	.id_table = spi_imx_devtype,
 	.probe = spi_imx_probe,
 	.remove = spi_imx_remove,
