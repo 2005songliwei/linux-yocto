@@ -79,6 +79,8 @@
 #define DP83867_PHYCR_FIFO_DEPTH_SHIFT		14
 #define DP83867_PHYCR_FIFO_DEPTH_MAX		0x03
 #define DP83867_PHYCR_FIFO_DEPTH_MASK		GENMASK(15, 14)
+#define DP83867_MDI_CROSSOVER		5
+#define DP83867_MDI_CROSSOVER_AUTO	0b10
 #define DP83867_PHYCR_RESERVED_MASK		BIT(11)
 
 /* RGMIIDCTL bits */
@@ -314,6 +316,12 @@ static int dp83867_config_init(struct phy_device *phydev)
 				   BIT(7));
 
 	if (phy_interface_is_rgmii(phydev)) {
+		ret = phy_write(phydev, MII_DP83867_PHYCTRL,
+			(DP83867_MDI_CROSSOVER_AUTO << DP83867_MDI_CROSSOVER) |
+			(dp83867->fifo_depth << DP83867_PHYCR_FIFO_DEPTH_SHIFT));
+		if (ret)
+			return ret;
+
 		val = phy_read(phydev, MII_DP83867_PHYCTRL);
 		if (val < 0)
 			return val;
