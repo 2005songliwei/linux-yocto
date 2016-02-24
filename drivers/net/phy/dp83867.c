@@ -24,11 +24,12 @@
 #define MII_DP83867_MICR	0x12
 #define MII_DP83867_ISR		0x13
 #define DP83867_CFG2		0x14
+#define MII_DP83867_BISCR	0x16
 #define DP83867_CFG3		0x1e
 #define DP83867_CTRL		0x1f
 
 /* Extended Registers */
-#define DP83867_CFG4            0x0031
+#define DP83867_CFG4		0x0031
 #define DP83867_CFG4_SGMII_ANEG_MASK (BIT(5) | BIT(6))
 #define DP83867_CFG4_SGMII_ANEG_TIMER_11MS   (3 << 5)
 #define DP83867_CFG4_SGMII_ANEG_TIMER_800US  (2 << 5)
@@ -100,6 +101,10 @@
 #define DP83867_PHYCR_RX_FIFO_DEPTH_MASK	GENMASK(13, 12)
 #define DP83867_MDI_CROSSOVER		5
 #define DP83867_MDI_CROSSOVER_AUTO	0b10
+#define DP83867_MDI_CROSSOVER_MDIX	0b01
+#define DP83867_PHYCTRL_SGMIIEN			0x0800
+#define DP83867_PHYCTRL_RXFIFO_SHIFT	12
+#define DP83867_PHYCTRL_TXFIFO_SHIFT	14
 #define DP83867_PHYCR_RESERVED_MASK		BIT(11)
 #define DP83867_PHYCR_FORCE_LINK_GOOD		BIT(10)
 
@@ -111,6 +116,14 @@
 #define DP83867_RGMII_RX_CLK_DELAY_SHIFT	0
 #define DP83867_RGMII_RX_CLK_DELAY_INV	(DP83867_RGMII_RX_CLK_DELAY_MAX + 1)
 
+
+/* CFG2 bits */
+#define MII_DP83867_CFG2_SPEEDOPT_10EN		0x0040
+#define MII_DP83867_CFG2_SGMII_AUTONEGEN	0x0080
+#define MII_DP83867_CFG2_SPEEDOPT_ENH		0x0100
+#define MII_DP83867_CFG2_SPEEDOPT_CNT		0x0800
+#define MII_DP83867_CFG2_SPEEDOPT_INTLOW	0x2000
+#define MII_DP83867_CFG2_MASK			0x003F
 
 /* IO_MUX_CFG bits */
 #define DP83867_IO_MUX_CFG_IO_IMPEDANCE_MASK	0x1f
@@ -466,17 +479,12 @@ static int dp83867_probe(struct phy_device *phydev)
 static int dp83867_config_init(struct phy_device *phydev)
 {
 	struct dp83867_private *dp83867 = phydev->priv;
-	int ret, val, bs;
-	u16 delay;
+	int ret, bs;
+	u16 val, delay, cfg2;
 
 	ret = dp83867_verify_rgmii_cfg(phydev);
 	if (ret)
 		return ret;
-
-	/* RX_DV/RX_CTRL strapped in mode 1 or mode 2 workaround */
-	if (dp83867->rxctrl_strap_quirk)
-		phy_clear_bits_mmd(phydev, DP83867_DEVADDR, DP83867_CFG4,
-				   BIT(7));
 
 	if (phy_interface_is_rgmii(phydev) ||
 	    phydev->interface == PHY_INTERFACE_MODE_SGMII) {
@@ -528,37 +536,63 @@ static int dp83867_config_init(struct phy_device *phydev)
 		if (ret)
 			return ret;
 
-		/* If rgmii mode with no internal delay is selected, we do NOT use
-		 * aligned mode as one might expect.  Instead we use the PHY's default
-		 * based on pin strapping.  And the "mode 0" default is to *use*
-		 * internal delay with a value of 7 (2.00 ns).
-		 *
-		 * Set up RGMII delays
-		 */
-		val = phy_read_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL);
+		/* RX_DV/RX_CTRL strapped in mode 1 or mode 2 workaround */
+		if (dp83867->rxctrl_strap_quirk) {
+			val = phy_read_mmd(phydev, DP83867_DEVADDR,
+					   DP83867_CFG4);
+			val &= ~BIT(7);
+			phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_CFG4,
+				      val);
+		}
+	} else {
+		phy_write(phydev, MII_BMCR,
+			  (BMCR_ANENABLE | BMCR_FULLDPLX | BMCR_SPEED1000));
 
-		val &= ~(DP83867_RGMII_TX_CLK_DELAY_EN | DP83867_RGMII_RX_CLK_DELAY_EN);
-		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_ID)
-			val |= (DP83867_RGMII_TX_CLK_DELAY_EN | DP83867_RGMII_RX_CLK_DELAY_EN);
+		cfg2 = phy_read(phydev, DP83867_CFG2);
+		cfg2 &= MII_DP83867_CFG2_MASK;
+		cfg2 |= (MII_DP83867_CFG2_SPEEDOPT_10EN |
+			 MII_DP83867_CFG2_SGMII_AUTONEGEN |
+			 MII_DP83867_CFG2_SPEEDOPT_ENH |
+			 MII_DP83867_CFG2_SPEEDOPT_CNT |
+			 MII_DP83867_CFG2_SPEEDOPT_INTLOW);
+		phy_write(phydev, DP83867_CFG2, cfg2);
 
-		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID)
-			val |= DP83867_RGMII_TX_CLK_DELAY_EN;
+		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL, 0x0);
 
-		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID)
-			val |= DP83867_RGMII_RX_CLK_DELAY_EN;
-
-		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL, val);
-
-		delay = 0;
-		if (dp83867->rx_id_delay != DP83867_RGMII_RX_CLK_DELAY_INV)
-			delay |= dp83867->rx_id_delay;
-		if (dp83867->tx_id_delay != DP83867_RGMII_TX_CLK_DELAY_INV)
-			delay |= dp83867->tx_id_delay <<
-				 DP83867_RGMII_TX_CLK_DELAY_SHIFT;
-
-		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIIDCTL,
-			      delay);
+		phy_write(phydev, MII_DP83867_PHYCTRL,
+			  DP83867_PHYCTRL_SGMIIEN |
+			  (DP83867_MDI_CROSSOVER_MDIX << DP83867_MDI_CROSSOVER) |
+			  (dp83867->rx_fifo_depth << DP83867_PHYCTRL_RXFIFO_SHIFT) |
+			  (dp83867->tx_fifo_depth << DP83867_PHYCTRL_TXFIFO_SHIFT));
+		phy_write(phydev, MII_DP83867_BISCR, 0x0);
 	}
+
+	/* If rgmii mode with no internal delay is selected, we do NOT use
+	 * aligned mode as one might expect.  Instead we use the PHY's default
+	 * based on pin strapping.  And the "mode 0" default is to *use*
+	 * internal delay with a value of 7 (2.00 ns).
+	 *
+	 * Set up RGMII delays
+	 */
+	val = phy_read_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL);
+
+	val &= ~(DP83867_RGMII_TX_CLK_DELAY_EN | DP83867_RGMII_RX_CLK_DELAY_EN);
+	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_ID)
+		val |= (DP83867_RGMII_TX_CLK_DELAY_EN | DP83867_RGMII_RX_CLK_DELAY_EN);
+
+	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID)
+		val |= DP83867_RGMII_TX_CLK_DELAY_EN;
+
+	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID)
+		val |= DP83867_RGMII_RX_CLK_DELAY_EN;
+
+	phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL, val);
+
+	delay = (dp83867->rx_id_delay |
+		(dp83867->tx_id_delay << DP83867_RGMII_TX_CLK_DELAY_SHIFT));
+
+	phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIIDCTL,
+			      delay);
 
 	/* If specified, set io impedance */
 	if (dp83867->io_impedance >= 0)
