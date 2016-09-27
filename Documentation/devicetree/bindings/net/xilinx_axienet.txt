@@ -19,7 +19,8 @@ Required properties:
 		  "xlnx,axi-ethernet-1.01.a", "xlnx,axi-ethernet-2.01.a"
 		  for Axi Ethenret 1G MAC
 		  controllers and "xlnx,ten-gig-eth-mac" for Axi
-		  Ethernet 10G MAC controllers.
+		  Ethernet 10G MAC controllers and
+		  "xlnx,xxv-ethernet-1.0" for 10G/25G MAC.
 - reg		: Address and length of the IO space, as well as the address
                   and length of the AXI DMA controller IO space, unless
                   axistream-connected is specified, in which case the reg
