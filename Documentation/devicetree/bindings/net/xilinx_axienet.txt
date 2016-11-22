@@ -56,6 +56,7 @@ Optional properties:
  - mdio		: Child node for MDIO bus. Must be defined if PHY access is
 		  required through the core's MDIO interface (i.e. always,
 		  unless the PHY is accessed through a different bus).
+- xlnx,rxtsfifo 	: Configures the axi fifo for receive timestamping.
 
 Example:
 	axi_ethernet_eth_buf: axi-ethernet@44a00000 {
