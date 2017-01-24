@@ -58,6 +58,7 @@ Optional properties:
 		  required through the core's MDIO interface (i.e. always,
 		  unless the PHY is accessed through a different bus).
 - xlnx,rxtsfifo 	: Configures the axi fifo for receive timestamping.
+- xlnx,include-dre	: Tells whether DMA h/w is configured with DRE or not.
 
 Example:
 	axi_ethernet_eth_buf: axi-ethernet@44a00000 {
