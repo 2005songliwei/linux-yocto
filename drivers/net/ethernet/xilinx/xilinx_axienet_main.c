@@ -1092,10 +1092,12 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 				if (lp->tstamp_config.tx_type ==
 					HWTSTAMP_TX_ONESTEP_SYNC) {
 					axienet_create_tsheader(tmp,
-								TX_TS_OP_ONESTEP, q);
+								TX_TS_OP_ONESTEP
+								, q);
 				} else {
 					axienet_create_tsheader(tmp,
-								TX_TS_OP_TWOSTEP, q);
+								TX_TS_OP_TWOSTEP
+								, q);
 					skb_shinfo(skb)->tx_flags
 							|= SKBTX_IN_PROGRESS;
 					cur_p->ptp_tx_skb =
@@ -2484,7 +2486,7 @@ static void axienet_dma_err_handler(unsigned long data)
 		if (cur_p->skb)
 			dev_kfree_skb_irq(cur_p->skb);
 		if (cur_p->tx_skb)
-			dev_kfree_skb_irq((struct sk_buff *) cur_p->tx_skb);
+			dev_kfree_skb_irq((struct sk_buff *)cur_p->tx_skb);
 		cur_p->phys = 0;
 		cur_p->cntrl = 0;
 		cur_p->status = 0;
