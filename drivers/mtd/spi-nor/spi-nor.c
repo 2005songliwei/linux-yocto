@@ -5465,12 +5465,24 @@ static int spi_nor_set_addr_width(struct spi_nor *nor)
 			if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
 			    info->flags & SPI_NOR_4B_OPCODES)
 				spi_nor_set_4byte_opcodes(nor);
-			else
-				if (nor->isstacked) {
-					nor->spi->master->flags |= SPI_MASTER_U_PAGE;
+			else {
+				np_spi = of_get_next_parent(np);
+				if (of_property_match_string(np_spi,
+						"compatible",
+						"xlnx,xps-spi-2.00.a") >= 0) {
+					nor->addr_width = 3;
+					nor->params.set_4byte(nor, false);
+				} else {
 					nor->params.set_4byte(nor, true);
-					nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
+					if (nor->isstacked) {
+						nor->spi->master->flags |=
+							SPI_MASTER_U_PAGE;
+						nor->params.set_4byte(nor, true);
+						nor->spi->master->flags &=
+							~SPI_MASTER_U_PAGE;
+					}
 				}
+			}
 #ifdef CONFIG_OF
 		}
 #endif
