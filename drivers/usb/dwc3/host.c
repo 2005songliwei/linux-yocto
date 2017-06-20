@@ -8,6 +8,7 @@
  */
 
 #include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include "core.h"
 
@@ -75,7 +76,6 @@ int dwc3_host_init(struct dwc3 *dwc)
 	}
 
 	xhci->dev.parent	= dwc->dev;
-	xhci->dev.archdata	= dwc->dev->archdata;
 
 	dwc->xhci = xhci;
 
