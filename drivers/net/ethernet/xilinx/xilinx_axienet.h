@@ -474,6 +474,7 @@ enum XAE_QUEUE {
  * @dq:		DMA queues data
  * @phy_mode:	Phy type to identify between MII/GMII/RGMII/SGMII/1000 Base-X
  * @is_tsn:	Denotes a tsn port
+ * @num_q:	Denotes number of queue in current TSN design
  * @temac_no:	Denotes the port number in TSN IP
  * @timer_priv: PTP timer private data pointer
  * @ptp_tx_irq: PTP tx irq
@@ -538,6 +539,8 @@ struct axienet_local {
 	struct axienet_dma_q *dq[XAE_MAX_QUEUES];	/* DAM queue data*/
 
 	bool is_tsn;
+#ifdef CONFIG_XILINX_TSN
+	int num_q;
 #ifdef CONFIG_XILINX_TSN_PTP
 	void *timer_priv;
 	int ptp_tx_irq;
@@ -549,6 +552,7 @@ struct axienet_local {
 	struct sk_buff_head ptp_txq;
 	struct work_struct tx_tstamp_work;
 	spinlock_t ptp_tx_lock;		/* TSN PTP tx lock*/
+#endif
 #endif
 
 	int eth_irq;
