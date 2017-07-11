@@ -2530,6 +2530,7 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "640s33b",  INFO(0x898913, 0, 64 * 1024, 128, 0) },
 
 	/* ISSI */
+	{ "is25lp256d", INFO(0x9d6019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_HAS_LOCK) },
 	{ "is25cd512",  INFO(0x7f9d20, 0, 32 * 1024,   2, SECT_4K) },
 	{ "is25lq040b", INFO(0x9d4013, 0, 64 * 1024,   8,
 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
@@ -4800,6 +4801,7 @@ static void spi_nor_manufacturer_init_params(struct spi_nor *nor)
 	/* Init flash parameters based on MFR */
 	switch (JEDEC_MFR(nor->info)) {
 	case SNOR_MFR_MACRONIX:
+	case SNOR_MFR_ISSI:
 		macronix_set_default_init(nor);
 		break;
 
