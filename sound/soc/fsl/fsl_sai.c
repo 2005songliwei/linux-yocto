@@ -1099,6 +1099,8 @@ static int fsl_sai_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 
+	regcache_cache_only(sai->regmap, true);
+
 	ret = devm_snd_soc_register_component(&pdev->dev, &fsl_component,
 					      &sai->cpu_dai_drv, 1);
 	if (ret)
@@ -1139,6 +1141,8 @@ MODULE_DEVICE_TABLE(of, fsl_sai_ids);
 static int fsl_sai_runtime_suspend(struct device *dev)
 {
 	struct fsl_sai *sai = dev_get_drvdata(dev);
+
+	regcache_cache_only(sai->regmap, true);
 
 	if (sai->mclk_streams & BIT(SNDRV_PCM_STREAM_CAPTURE))
 		clk_disable_unprepare(sai->mclk_clk[sai->mclk_id[0]]);
