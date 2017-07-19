@@ -63,6 +63,10 @@ Optional Properties:
     which the command and data lines are configured. If not specified, driver
     will assume this as 0.
 
+Optional Properties for "xlnx,zynqmp-8.9a":
+ - nvmem-cells: list of phandle to the nvmem data cells.
+ - nvmem-cell-names: Names for the each nvmem-cells specified.
+
 Example:
 	sdhci@e0100000 {
 		compatible = "arasan,sdhci-8.9a";
