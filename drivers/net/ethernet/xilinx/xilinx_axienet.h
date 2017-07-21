@@ -621,6 +621,7 @@ enum XAE_QUEUE {
  * @coalesce_count_tx:	Store the irq coalesce on TX side.
  * @phy_flags:	Phy interface flags.
  * @eth_hasnobuf: Ethernet is configured in Non buf mode.
+ * @eth_hasptp: Ethernet is configured for ptp.
  * @axienet_config: Ethernet config structure
  * @tx_ts_regs:	  Base address for the axififo device address space.
  * @rx_ts_regs:	  Base address for the rx axififo device address space.
@@ -700,6 +701,7 @@ struct axienet_local {
 	u32 coalesce_count_tx;
 	u32 phy_flags;
 	bool eth_hasnobuf;
+	bool eth_hasptp;
 	const struct axienet_config *axienet_config;
 
 #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
