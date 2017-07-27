@@ -3875,7 +3875,7 @@ static int axienet_probe(struct platform_device *pdev)
 	lp->ndev = ndev;
 	lp->dev = &pdev->dev;
 	lp->options = XAE_OPTION_DEFAULTS;
-	lp->num_queues = XAE_MAX_QUEUES;
+	lp->num_queues = num_queues;
 	lp->rx_bd_num = RX_BD_NUM_DEFAULT;
 	lp->tx_bd_num = TX_BD_NUM_DEFAULT;
 	lp->is_tsn = of_property_read_bool(pdev->dev.of_node, "xlnx,tsn");
