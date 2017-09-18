@@ -426,6 +426,7 @@ struct axidma_bd {
  * @coalesce_count_tx:	Store the irq coalesce on TX side.
  * @phy_flags:	Phy interface flags.
  * @eth_hasnobuf: Ethernet is configured in Non buf mode.
+ * @axienet_config: Ethernet config structure
  */
 struct axienet_local {
 	struct net_device *ndev;
@@ -482,6 +483,22 @@ struct axienet_local {
 	u32 coalesce_count_tx;
 	u32 phy_flags;
 	bool eth_hasnobuf;
+	const struct axienet_config *axienet_config;
+};
+
+/**
+ * enum axienet_ip_type - AXIENET IP/MAC type.
+ *
+ * @XAXIENET_1G:	 IP is 1G MAC
+ *
+ */
+enum axienet_ip_type {
+	XAXIENET_1G = 0,
+};
+
+struct axienet_config {
+	enum axienet_ip_type mactype;
+	void (*setoptions)(struct net_device *ndev, u32 options);
 };
 
 /**
