@@ -302,6 +302,10 @@ static void axienet_set_mac_address(struct net_device *ndev,
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 
+	if (lp->axienet_config->mactype != XAXIENET_1G &&
+	    lp->axienet_config->mactype != XAXIENET_2_5G)
+		return;
+
 	/* Set up unicast MAC address filter set its mac address */
 	axienet_iow(lp, XAE_UAW0_OFFSET,
 		    (ndev->dev_addr[0]) |
@@ -350,7 +354,7 @@ static void axienet_set_multicast_list(struct net_device *ndev)
 	u32 reg, af0reg, af1reg;
 	struct axienet_local *lp = netdev_priv(ndev);
 
-	if (lp->eth_hasnobuf)
+	if ((lp->axienet_config->mactype != XAXIENET_1G) || lp->eth_hasnobuf)
 		return;
 
 	if (ndev->flags & (IFF_ALLMULTI | IFF_PROMISC) ||
@@ -644,7 +648,8 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		netif_wake_queue(ndev);
 	}
 
-	if (skb->ip_summed == CHECKSUM_PARTIAL && !lp->eth_hasnobuf) {
+	if (skb->ip_summed == CHECKSUM_PARTIAL && !lp->eth_hasnobuf &&
+	    (lp->axienet_config->mactype == XAXIENET_1G)) {
 		if (lp->features & XAE_FEATURE_FULL_TX_CSUM) {
 			/* Tx Full Checksum Offload Enabled */
 			cur_p->app0 |= 2;
@@ -656,7 +661,8 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 			cur_p->app1 = (csum_start_off << 16) | csum_index_off;
 		}
 	} else if (skb->ip_summed == CHECKSUM_UNNECESSARY &&
-		   !lp->eth_hasnobuf) {
+		   !lp->eth_hasnobuf &&
+		   (lp->axienet_config->mactype == XAXIENET_1G)) {
 		cur_p->app0 |= 2; /* Tx Full Checksum Offload Enabled */
 	}
 
@@ -730,7 +736,8 @@ static int axienet_recv(struct net_device *ndev, int budget)
 
 		skb = cur_p->skb;
 		cur_p->skb = NULL;
-		if (lp->eth_hasnobuf)
+		if (lp->eth_hasnobuf ||
+		    (lp->axienet_config->mactype != XAXIENET_1G))
 			length = cur_p->status & XAXIDMA_BD_STS_ACTUAL_LEN_MASK;
 		else
 			length = cur_p->app4 & 0x0000FFFF;
@@ -742,6 +749,7 @@ static int axienet_recv(struct net_device *ndev, int budget)
 
 		/* if we're doing Rx csum offload, set it up */
 		if (lp->features & XAE_FEATURE_FULL_RX_CSUM &&
+		    (lp->axienet_config->mactype == XAXIENET_1G) &&
 		    !lp->eth_hasnobuf) {
 			csumstatus = (cur_p->app2 &
 				      XAE_FULL_CSUM_STATUS_MASK) >> 3;
@@ -751,7 +759,8 @@ static int axienet_recv(struct net_device *ndev, int budget)
 			}
 		} else if ((lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) != 0 &&
 			   skb->protocol == htons(ETH_P_IP) &&
-			   skb->len > 64 && !lp->eth_hasnobuf) {
+			   skb->len > 64 && !lp->eth_hasnobuf &&
+			   (lp->axienet_config->mactype == XAXIENET_1G)) {
 			skb->csum = be32_to_cpu(cur_p->app3 & 0xFFFF);
 			skb->ip_summed = CHECKSUM_COMPLETE;
 		}
@@ -1731,6 +1740,11 @@ static const struct axienet_config axienet_2_5g_config = {
 	.setoptions = axienet_setoptions,
 };
 
+static const struct axienet_config axienet_10g_config = {
+	.mactype = XAXIENET_LEGACY_10G,
+	.setoptions = axienet_setoptions,
+};
+
 /* Match table for of_platform binding */
 static const struct of_device_id axienet_of_match[] = {
 	{ .compatible = "xlnx,axi-ethernet-1.00.a", .data = &axienet_1g_config},
@@ -1738,6 +1752,7 @@ static const struct of_device_id axienet_of_match[] = {
 	{ .compatible = "xlnx,axi-ethernet-2.01.a", .data = &axienet_1g_config},
 	{ .compatible = "xlnx,axi-2_5-gig-ethernet-1.0",
 						.data = &axienet_2_5g_config},
+	{ .compatible = "xlnx,ten-gig-eth-mac", .data = &axienet_10g_config},
 	{},
 };
 
