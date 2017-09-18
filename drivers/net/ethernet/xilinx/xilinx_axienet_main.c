@@ -979,7 +979,7 @@ static int axienet_open(struct net_device *ndev)
 	if (ret < 0)
 		return ret;
 
-	ret = phylink_of_phy_connect(lp->phylink, lp->dev->of_node, 0);
+	ret = phylink_of_phy_connect(lp->phylink, lp->dev->of_node, lp->phy_flags);
 	if (ret) {
 		dev_err(lp->dev, "phylink_of_phy_connect() failed: %d\n", ret);
 		return ret;
@@ -1825,6 +1825,11 @@ static int axienet_probe(struct platform_device *pdev)
 		if (ret)
 			goto free_netdev;
 	}
+
+	if (lp->phy_mode == XAE_PHY_TYPE_1000BASE_X)
+		lp->phy_flags = XAE_PHY_TYPE_1000BASE_X;
+	else
+		lp->phy_flags = 0;
 
 	/* Find the DMA node, map the DMA registers, and decode the DMA IRQs */
 	np = of_parse_phandle(pdev->dev.of_node, "axistream-connected", 0);
