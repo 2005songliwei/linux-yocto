@@ -444,7 +444,11 @@ struct axidma_bd {
 	phys_addr_t ptp_tx_skb;
 	u32 ptp_tx_ts_tag;
 	phys_addr_t tx_skb;
+	u32 tx_desc_mapping;
 } __aligned(XAXIDMA_BD_MINIMUM_ALIGNMENT);
+
+#define DESC_DMA_MAP_SINGLE 0
+#define DESC_DMA_MAP_PAGE 1
 
 /**
  * struct axienet_local - axienet private per device data
