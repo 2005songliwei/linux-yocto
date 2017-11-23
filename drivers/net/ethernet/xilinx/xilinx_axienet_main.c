@@ -1161,6 +1161,8 @@ static void axienet_start_xmit_done(struct net_device *ndev,
 
 	ndev->stats.tx_packets += packets;
 	ndev->stats.tx_bytes += size;
+	q->tx_packets += packets;
+	q->tx_bytes += size;
 
 	/* Matches barrier in axienet_start_xmit */
 	smp_mb();
