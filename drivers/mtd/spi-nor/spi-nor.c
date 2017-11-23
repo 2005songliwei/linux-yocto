@@ -5900,13 +5900,6 @@ static int spi_nor_remove(struct spi_mem *spimem)
 	return mtd_device_unregister(&nor->mtd);
 }
 
-static void spi_nor_shutdown(struct spi_mem *spimem)
-{
-	struct spi_nor *nor = spi_mem_get_drvdata(spimem);
-
-	spi_nor_restore(nor);
-}
-
 /*
  * Do NOT add to this array without reading the following:
  *
@@ -5992,6 +5985,18 @@ static struct spi_mem_driver spi_nor_driver = {
 	.shutdown = spi_nor_shutdown,
 };
 module_spi_mem_driver(spi_nor_driver);
+
+void spi_nor_shutdown(struct spi_mem *mem)
+{
+	struct spi_nor *nor = spi_mem_get_drvdata(mem);
+
+	if (nor->addr_width == 3 &&
+		(nor->mtd.size >> nor->shift) > 0x1000000)
+		write_ear(nor, 0);
+
+	spi_nor_restore(nor);
+}
+EXPORT_SYMBOL_GPL(spi_nor_shutdown);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Huang Shijie <shijie8@gmail.com>");
