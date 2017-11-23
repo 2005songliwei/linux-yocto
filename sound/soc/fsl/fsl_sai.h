@@ -181,6 +181,7 @@ struct fsl_sai {
 	unsigned int mclk_streams;
 	unsigned int slots;
 	unsigned int slot_width;
+	unsigned int bitclk_freq;
 	unsigned int bclk_ratio;
 
 	struct snd_soc_dai_driver cpu_dai_drv;
