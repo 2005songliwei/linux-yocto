@@ -630,6 +630,7 @@ struct spi_nor {
 	bool			isparallel;
 	bool                    isstacked;
 	u32			flags;
+	bool			is_lock;
 
 	const struct spi_nor_controller_ops *controller_ops;
 

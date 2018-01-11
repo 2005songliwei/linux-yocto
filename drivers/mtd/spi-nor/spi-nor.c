@@ -1977,7 +1977,8 @@ static int write_sr_modify_protection(struct spi_nor *nor, uint8_t status,
 			bp_mask |= SR_BP3;
 	}
 
-	status_new |= bp_mask;
+	if (nor->is_lock)
+		status_new |= bp_mask;
 
 	ret = spi_nor_write_enable(nor);
 	if (ret)
@@ -2115,8 +2116,6 @@ static int stm_lock(struct spi_nor *nor, loff_t ofs, uint64_t len)
 	bool can_be_top = true, can_be_bottom = nor->flags & SNOR_F_HAS_SR_TB;
 	bool use_top;
 
-	ofs = ofs >> nor->shift;
-
 	ret = spi_nor_read_sr(nor, nor->bouncebuf);
 	if (ret)
 		return ret;
@@ -2202,8 +2201,6 @@ static int stm_unlock(struct spi_nor *nor, loff_t ofs, uint64_t len)
 	loff_t lock_len;
 	bool can_be_top = true, can_be_bottom = nor->flags & SNOR_F_HAS_SR_TB;
 	bool use_top;
-
-	ofs = ofs >> nor->shift;
 
 	ret = spi_nor_read_sr(nor, nor->bouncebuf);
 	if (ret)
@@ -2328,8 +2325,10 @@ static int spi_nor_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	lock_bits = min_protected_area_including_offset(nor, ofs);
 
 	/* Only modify protection if it will not unlock other areas */
-	if (lock_bits > bp_bits_from_sr(nor, status))
+	if (lock_bits > bp_bits_from_sr(nor, status)) {
+		nor->is_lock = 1;
 		ret = write_sr_modify_protection(nor, status, lock_bits);
+	}
 	else
 		dev_err(nor->dev, "trying to unlock already locked area\n");
 err:
@@ -2364,8 +2363,10 @@ static int spi_nor_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	lock_bits = min_protected_area_including_offset(nor, ofs+len) - 1;
 
 	/* Only modify protection if it will not lock other areas */
-	if (lock_bits < bp_bits_from_sr(nor, status))
+	if (lock_bits < bp_bits_from_sr(nor, status)) {
+		nor->is_lock = 0;
 		ret = write_sr_modify_protection(nor, status, lock_bits);
+	}
 	else
 		dev_err(nor->dev, "trying to lock already unlocked area\n");
 err:
