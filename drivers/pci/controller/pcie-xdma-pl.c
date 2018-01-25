@@ -599,7 +599,6 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct pci_bus *bus;
 	struct pci_bus *child;
-
 	int err;
 
 	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
@@ -629,10 +628,11 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	bus = pci_create_root_bus(&pdev->dev, 0,
-				  &xilinx_pcie_ops, port, &res);
-	if (!bus)
-		return -ENOMEM;
+	bus = pci_create_root_bus(&pdev->dev, 0, &xilinx_pcie_ops, port, &res);
+	if (!bus) {
+		err = -ENOMEM;
+		return err;
+	}
 
 	pci_scan_child_bus(bus);
 	pci_assign_unassigned_bus_resources(bus);
@@ -640,7 +640,6 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 		pcie_bus_configure_settings(child);
 	pci_bus_add_devices(bus);
 	platform_set_drvdata(pdev, port);
-
 	return 0;
 }
 
