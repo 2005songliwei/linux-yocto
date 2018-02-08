@@ -4259,7 +4259,8 @@ static int axienet_remove(struct platform_device *pdev)
 	if (lp->phylink)
 		phylink_destroy(lp->phylink);
 
-	axienet_mdio_teardown(lp);
+	if (lp->mii_bus)
+		axienet_mdio_teardown(lp);
 #ifdef CONFIG_XILINX_TSN_PTP
 	axienet_ptp_timer_remove(lp->timer_priv);
 #ifdef CONFIG_XILINX_TSN_QBV
