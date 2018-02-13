@@ -25,6 +25,7 @@
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
+#include "xlnx_drv.h"
 #include "xlnx_crtc.h"
 
 /*
@@ -52,6 +53,7 @@ struct xlnx_dma_chan {
 /**
  * struct xlnx_pl_disp - struct for display subsystem
  * @dev: device structure
+ * @master: logical master device from xlnx drm
  * @xlnx_crtc: Xilinx DRM driver crtc object
  * @plane: base drm plane object
  * @chan: struct for DMA engine
@@ -63,6 +65,7 @@ struct xlnx_dma_chan {
  */
 struct xlnx_pl_disp {
 	struct device *dev;
+	struct platform_device *master;
 	struct xlnx_crtc xlnx_crtc;
 	struct drm_plane plane;
 	struct xlnx_dma_chan *chan;
@@ -470,10 +473,19 @@ static int xlnx_pl_disp_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_dma;
 
+	xlnx_pl_disp->master = xlnx_drm_pipeline_init(pdev);
+	if (IS_ERR(xlnx_pl_disp->master)) {
+		ret = PTR_ERR(xlnx_pl_disp->dev);
+		dev_err(dev, "failed to initialize the drm pipeline\n");
+		goto err_component;
+	}
+
 	dev_info(&pdev->dev, "Xlnx PL display driver probed\n");
 
 	return 0;
 
+err_component:
+	component_del(dev, &xlnx_pl_disp_component_ops);
 err_dma:
 	dma_release_channel(xlnx_pl_disp->chan->dma_chan);
 
@@ -485,6 +497,7 @@ static int xlnx_pl_disp_remove(struct platform_device *pdev)
 	struct xlnx_pl_disp *xlnx_pl_disp = platform_get_drvdata(pdev);
 	struct xlnx_dma_chan *xlnx_dma_chan = xlnx_pl_disp->chan;
 
+	xlnx_drm_pipeline_exit(xlnx_pl_disp->master);
 	component_del(&pdev->dev, &xlnx_pl_disp_component_ops);
 
 	/* Make sure the channel is terminated before release */
