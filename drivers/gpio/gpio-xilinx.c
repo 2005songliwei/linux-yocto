@@ -244,6 +244,8 @@ static int xgpio_xlate(struct gpio_chip *gc,
 		       const struct of_phandle_args *gpiospec, u32 *flags)
 {
 	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	if (gc->of_gpio_n_cells == 3 && flags)
+		*flags = gpiospec->args[2];
 
 	if (gpiospec->args[1] == chip->offset)
 		return gpiospec->args[0];
@@ -542,6 +544,7 @@ static int xgpio_of_probe(struct platform_device *pdev)
 	int status = 0;
 	const u32 *tree_info;
 	u32 ngpio;
+	u32 cells = 2;
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
@@ -555,6 +558,9 @@ static int xgpio_of_probe(struct platform_device *pdev)
 
 	/* Update GPIO direction shadow register with default value */
 	of_property_read_u32(np, "xlnx,tri-default", &chip->gpio_dir);
+
+	/* Update cells with gpio-cells value */
+	of_property_read_u32(np, "#gpio-cells", &cells);
 
 	/*
 	 * Check device node and parent device node for device width
@@ -570,7 +576,7 @@ static int xgpio_of_probe(struct platform_device *pdev)
 	chip->gc.parent = &pdev->dev;
 	chip->gc.owner = THIS_MODULE;
 	chip->gc.of_xlate = xgpio_xlate;
-	chip->gc.of_gpio_n_cells = 2;
+	chip->gc.of_gpio_n_cells = cells;
 	chip->gc.direction_input = xgpio_dir_in;
 	chip->gc.direction_output = xgpio_dir_out;
 	chip->gc.get = xgpio_get;
@@ -664,7 +670,7 @@ static int xgpio_of_probe(struct platform_device *pdev)
 		chip->gc.parent = &pdev->dev;
 		chip->gc.owner = THIS_MODULE;
 		chip->gc.of_xlate = xgpio_xlate;
-		chip->gc.of_gpio_n_cells = 2;
+		chip->gc.of_gpio_n_cells = cells;
 		chip->gc.direction_input = xgpio_dir_in;
 		chip->gc.direction_output = xgpio_dir_out;
 		chip->gc.get = xgpio_get;
