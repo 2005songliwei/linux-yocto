@@ -283,6 +283,9 @@ static void macb_set_hwaddr(struct macb *bp)
 	top = cpu_to_le16(*((u16 *)(bp->dev->dev_addr + 4)));
 	macb_or_gem_writel(bp, SA1T, top);
 
+	gem_writel(bp, RXPTPUNI, bottom);
+	gem_writel(bp, TXPTPUNI, bottom);
+
 	/* Clear unused address register sets */
 	macb_or_gem_writel(bp, SA2B, 0);
 	macb_or_gem_writel(bp, SA2T, 0);
@@ -650,7 +653,8 @@ static void macb_mac_link_up(struct phylink_config *config, unsigned int mode,
 	}
 
 	/* Enable Rx and Tx */
-	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(RE) | MACB_BIT(TE));
+	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(RE) | MACB_BIT(TE) |
+		    MACB_BIT(PTPUNI));
 
 	netif_tx_wake_all_queues(ndev);
 }
@@ -3613,6 +3617,10 @@ static int macb_clk_init(struct platform_device *pdev, struct clk **pclk,
 	if (IS_ERR(*tsu_clk))
 		return PTR_ERR(*tsu_clk);
 
+	*tsu_clk = devm_clk_get(&pdev->dev, "tsu_clk");
+	if (IS_ERR(*tsu_clk))
+		*tsu_clk = NULL;
+
 	err = clk_prepare_enable(*pclk);
 	if (err) {
 		dev_err(&pdev->dev, "failed to enable pclk (%d)\n", err);
@@ -4457,6 +4465,9 @@ static int macb_probe(struct platform_device *pdev)
 	bp->tx_clk = tx_clk;
 	bp->rx_clk = rx_clk;
 	bp->tsu_clk = tsu_clk;
+	if (tsu_clk)
+		bp->tsu_rate = clk_get_rate(tsu_clk);
+
 	if (macb_config)
 		bp->jumbo_max_len = macb_config->jumbo_max_len;
 
