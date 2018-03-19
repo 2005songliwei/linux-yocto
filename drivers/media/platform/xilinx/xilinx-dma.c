@@ -712,6 +712,8 @@ xvip_dma_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 			return PTR_ERR(fmt);
 
 		f->pixelformat = fmt->fourcc;
+
+		return 0;
 	}
 
 	/* Single plane formats */
