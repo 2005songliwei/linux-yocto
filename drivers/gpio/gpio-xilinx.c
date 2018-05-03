@@ -51,6 +51,7 @@
  * @offset: GPIO channel offset
  * @irq_base: GPIO channel irq base address
  * @irq_enable: GPIO irq enable/disable bitfield
+ * @no_init: No intitialisation at probe
  * @gpio_lock: Lock used for synchronization
  * @irq_domain: irq_domain of the controller
  * @clk: clock resource for this driver
@@ -63,6 +64,7 @@ struct xgpio_instance {
 	u32 offset;
 	int irq_base;
 	u32 irq_enable;
+	bool no_init;
 	spinlock_t gpio_lock;
 	struct irq_domain *irq_domain;
 	struct clk *clk;
@@ -225,10 +227,16 @@ static int xgpio_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
  */
 static void xgpio_save_regs(struct xgpio_instance *chip)
 {
-	xgpio_writereg(chip->regs + chip->offset + XGPIO_DATA_OFFSET,
-							chip->gpio_state);
-	xgpio_writereg(chip->regs + chip->offset + XGPIO_TRI_OFFSET,
-							 chip->gpio_dir);
+	if (chip->no_init) {
+		chip->gpio_state = xgpio_readreg(chip->regs +
+						 XGPIO_DATA_OFFSET);
+		chip->gpio_dir = xgpio_readreg(chip->regs + XGPIO_TRI_OFFSET);
+	} else {
+		xgpio_writereg(chip->regs + chip->offset + XGPIO_DATA_OFFSET,
+			       chip->gpio_state);
+		xgpio_writereg(chip->regs + chip->offset + XGPIO_TRI_OFFSET,
+			       chip->gpio_dir);
+	}
 }
 
 /**
@@ -558,6 +566,8 @@ static int xgpio_of_probe(struct platform_device *pdev)
 
 	/* Update GPIO direction shadow register with default value */
 	of_property_read_u32(np, "xlnx,tri-default", &chip->gpio_dir);
+
+	chip->no_init = of_property_read_bool(np, "xlnx,no-init");
 
 	/* Update cells with gpio-cells value */
 	of_property_read_u32(np, "#gpio-cells", &cells);
