@@ -1084,6 +1084,10 @@ struct cdns3_trb {
 #define CDNS3_MAX_NUM_DESCMISS_BUF	32
 #define CDNS3_DESCMIS_BUF_SIZE		2048	/* Bytes */
 #define CDNS3_WA2_NUM_BUFFERS		128
+
+/* 18KB is the total size, and 2KB is used for EP0 and configuration */
+#define CDNS3_ONCHIP_BUF_SIZE  16      /* KB */
+#define CDNS3_EP_BUF_SIZE      2       /* KB */
 /*-------------------------------------------------------------------------*/
 /* Used structs */
 
