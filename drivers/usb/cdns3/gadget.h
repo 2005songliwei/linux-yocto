@@ -1079,6 +1079,7 @@ struct cdns3_trb {
 #define CDNS3_EP_ZLP_BUF_SIZE		1024
 
 #define CDNS3_EP_BUF_SIZE		2	/* KB */
+#define CDNS3_UNALIGNED_BUF_SIZE       16384 /* Bytes */
 #define CDNS3_EP_ISO_HS_MULT		3
 #define CDNS3_EP_ISO_SS_BURST		3
 #define CDNS3_MAX_NUM_DESCMISS_BUF	32
