@@ -14,4 +14,5 @@ config IMX8_PC
 	default m if IMX_DPU_CORE=m
 
 source "drivers/gpu/imx/ipu-v3/Kconfig"
+source "drivers/gpu/imx/lcdif/Kconfig"
 source "drivers/gpu/imx/dpu/Kconfig"
