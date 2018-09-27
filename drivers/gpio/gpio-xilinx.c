@@ -510,6 +510,15 @@ static int __maybe_unused xgpio_resume(struct device *dev)
 	return 0;
 }
 
+static int xgpio_remove(struct platform_device *pdev)
+{
+	struct xgpio_instance *chip = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(chip->clk);
+	pm_runtime_disable(&pdev->dev);
+
+	return 0;
+}
 static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -729,6 +738,7 @@ MODULE_DEVICE_TABLE(of, xgpio_of_match);
 
 static struct platform_driver xilinx_gpio_driver = {
 	.probe = xgpio_of_probe,
+	.remove = xgpio_remove,
 	.driver = {
 		.name = "xilinx-gpio",
 		.of_match_table = xgpio_of_match,
