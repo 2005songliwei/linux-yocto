@@ -662,7 +662,7 @@ static int ulite_assign(struct device *dev, int id, u32 base, int irq,
 	 * If register_console() don't assign value, then console_port pointer
 	 * is cleanup.
 	 */
-	if (ulite_uart_driver.cons->index == -1)
+	if (!console_port)
 		console_port = port;
 #endif
 
@@ -677,7 +677,8 @@ static int ulite_assign(struct device *dev, int id, u32 base, int irq,
 
 #ifdef CONFIG_SERIAL_UARTLITE_CONSOLE
 	/* This is not port which is used for console that's why clean it up */
-	if (ulite_uart_driver.cons->index == -1)
+	if (console_port == port &&
+	    !(ulite_uart_driver.cons->flags & CON_ENABLED))
 		console_port = NULL;
 #endif
 
@@ -814,9 +815,16 @@ static int ulite_remove(struct platform_device *pdev)
 {
 	struct uart_port *port = dev_get_drvdata(&pdev->dev);
 	struct uartlite_data *pdata = port->private_data;
+	int rc;
 
 	clk_disable_unprepare(pdata->clk);
-	return ulite_release(&pdev->dev);
+	rc = ulite_release(&pdev->dev);
+#ifdef CONFIG_SERIAL_UARTLITE_CONSOLE
+	if (console_port == port)
+		console_port = NULL;
+#endif
+
+	return rc;
 }
 
 /* work with hotplug and coldplug */
