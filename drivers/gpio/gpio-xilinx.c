@@ -514,7 +514,9 @@ static int xgpio_remove(struct platform_device *pdev)
 {
 	struct xgpio_instance *chip = platform_get_drvdata(pdev);
 
-	clk_disable_unprepare(chip->clk);
+	if (!pm_runtime_suspended(&pdev->dev))
+		clk_disable(chip->clk);
+	clk_unprepare(chip->clk);
 	pm_runtime_disable(&pdev->dev);
 
 	return 0;
@@ -635,16 +637,14 @@ static int xgpio_of_probe(struct platform_device *pdev)
 		return status;
 	}
 
+	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	status = pm_runtime_get_sync(&pdev->dev);
-	if (status < 0)
-		goto err_unprepare_clk;
 
 	xgpio_save_regs(chip);
 	status = devm_gpiochip_add_data(&pdev->dev, &chip->gc, chip);
 	if (status) {
 		dev_err(&pdev->dev, "failed to add GPIO chip\n");
-		goto err_pm_put;
+		goto err_unprepare_clk;
 	}
 
 	status = xgpio_irq_setup(np, chip);
