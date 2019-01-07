@@ -55,5 +55,6 @@ obj-$(CONFIG_UWB)		+= uwb/
 obj-$(CONFIG_USB_WUSB)		+= wusbcore/
 obj-$(CONFIG_EXFAT_FS)		+= exfat/
 obj-$(CONFIG_QLGE)		+= qlge/
+obj-y                          += xlnx_ctrl_driver/
 obj-$(CONFIG_XROE_FRAMER)	+= xroeframer/
 obj-$(CONFIG_XLNX_SYNC)		+= xlnxsync/
