@@ -951,6 +951,10 @@ init:
 	if (err)
 		goto cgx_err;
 
+	err = rvu_cpt_init(rvu);
+	if (err)
+		goto cgx_err;
+
 	/* Assign MACs for CGX mapped functions */
 	rvu_setup_pfvf_macaddress(rvu);
 
@@ -2636,6 +2640,10 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	err = rvu_register_interrupts(rvu);
 	if (err)
 		goto err_flr;
+
+	err = rvu_cpt_register_interrupts(rvu);
+	if (err)
+		goto err_irq;
 
 	rvu_setup_rvum_blk_revid(rvu);
 
