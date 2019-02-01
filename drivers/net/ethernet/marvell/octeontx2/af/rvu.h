@@ -521,4 +521,23 @@ void rvu_dbg_exit(struct rvu *rvu);
 static inline void rvu_dbg_init(struct rvu *rvu) {}
 static inline void rvu_dbg_exit(struct rvu *rvu) {}
 #endif
+
+/* TIM APIs */
+int rvu_tim_init(struct rvu *rvu);
+int rvu_mbox_handler_tim_lf_alloc(struct rvu *rvu,
+				  struct tim_lf_alloc_req *req,
+				  struct tim_lf_alloc_rsp *rsp);
+int rvu_mbox_handler_tim_lf_free(struct rvu *rvu,
+				 struct tim_ring_req *req,
+				 struct msg_rsp *rsp);
+int rvu_mbox_handler_tim_config_ring(struct rvu *rvu,
+				     struct tim_config_req *req,
+				     struct msg_rsp *rsp);
+int rvu_mbox_handler_tim_enable_ring(struct rvu *rvu,
+				     struct tim_ring_req *req,
+				     struct tim_enable_rsp *rsp);
+int rvu_mbox_handler_tim_disable_ring(struct rvu *rvu,
+				      struct tim_ring_req *req,
+				      struct msg_rsp *rsp);
+
 #endif /* RVU_H */
