@@ -55,3 +55,4 @@ obj-$(CONFIG_QLGE)		+= qlge/
 obj-$(CONFIG_NET_VENDOR_HP)	+= hp/
 obj-$(CONFIG_WFX)		+= wfx/
 obj-$(CONFIG_XROE_FRAMER)	+= xroeframer/
+obj-$(CONFIG_XLNX_SYNC)		+= xlnxsync/
