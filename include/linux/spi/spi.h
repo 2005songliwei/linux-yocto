@@ -826,6 +826,7 @@ extern void spi_res_release(struct spi_controller *ctlr,
  * @transfer_list: transfers are sequenced through @spi_message.transfers
  * @tx_sg: Scatterlist for transmit, currently not for client use
  * @rx_sg: Scatterlist for receive, currently not for client use
+ * @stripe: true-> enable stripe, false-> disable stripe.
  * @ptp_sts_word_pre: The word (subject to bits_per_word semantics) offset
  *	within @tx_buf for which the SPI device is requesting that the time
  *	snapshot for this transfer begins. Upon completing the SPI transfer,
@@ -938,7 +939,7 @@ struct spi_transfer {
 	struct spi_delay	word_delay;
 	u32		speed_hz;
 	u32		dummy;
-
+	bool		stripe;
 	u32		effective_speed_hz;
 
 	unsigned int	ptp_sts_word_pre;
@@ -1439,7 +1440,6 @@ struct spi_board_info {
 	/* slower signaling on noisy or low voltage boards */
 	u32		max_speed_hz;
 
-
 	/* bus_num is board specific and matches the bus_num of some
 	 * spi_controller that will probably be registered later.
 	 *
@@ -1518,6 +1518,9 @@ of_find_spi_device_by_node(struct device_node *node)
 }
 
 #endif /* IS_ENABLED(CONFIG_OF) */
+
+bool
+update_stripe(const u8 opcode);
 
 /* Compatibility layer */
 #define spi_master			spi_controller
