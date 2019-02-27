@@ -768,6 +768,7 @@ extern void spi_res_release(struct spi_controller *ctlr,
  * @transfer_list: transfers are sequenced through @spi_message.transfers
  * @tx_sg: Scatterlist for transmit, currently not for client use
  * @rx_sg: Scatterlist for receive, currently not for client use
+ * @stripe: true-> enable stripe, false-> disable stripe.
  *
  * SPI transfers always write the same number of bytes as they read.
  * Protocol drivers should always provide @rx_buf and/or @tx_buf.
@@ -855,7 +856,7 @@ struct spi_transfer {
 	u32		speed_hz;
 	u16		word_delay;
 	u32		dummy;
-
+	bool		stripe;
 	u32		effective_speed_hz;
 
 	struct list_head transfer_list;
@@ -1331,7 +1332,6 @@ struct spi_board_info {
 	/* slower signaling on noisy or low voltage boards */
 	u32		max_speed_hz;
 
-
 	/* bus_num is board specific and matches the bus_num of some
 	 * spi_controller that will probably be registered later.
 	 *
@@ -1410,6 +1410,9 @@ of_find_spi_device_by_node(struct device_node *node)
 }
 
 #endif /* IS_ENABLED(CONFIG_OF) */
+
+bool
+update_stripe(const u8 opcode);
 
 /* Compatibility layer */
 #define spi_master			spi_controller
