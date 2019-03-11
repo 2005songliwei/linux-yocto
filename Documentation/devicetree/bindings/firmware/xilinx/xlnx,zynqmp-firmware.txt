@@ -42,3 +42,13 @@ firmware {
 		...
 	};
 };
+
+Versal
+------
+firmware {
+	versal_firmware: versal-firmware {
+		compatible = "xlnx,versal-firmware-wip";
+		method = "smc";
+		...
+	};
+};
