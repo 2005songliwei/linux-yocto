@@ -28,6 +28,10 @@
 #define XAE_MAX_VLAN_FRAME_SIZE  (XAE_MTU + VLAN_ETH_HLEN + XAE_TRL_SIZE)
 #define XAE_MAX_JUMBO_FRAME_SIZE (XAE_JUMBO_MTU + XAE_HDR_SIZE + XAE_TRL_SIZE)
 
+/* DMA address width min and max range */
+#define XAE_DMA_MASK_MIN	32
+#define XAE_DMA_MASK_MAX	64
+
 /* In AXI DMA Tx and Rx queue count is same */
 #define for_each_tx_dma_queue(lp, var) \
 	for ((var) = 0; (var) < (lp)->num_tx_queues; (var)++)
@@ -506,9 +510,9 @@
 /**
  * struct axidma_bd - Axi Dma buffer descriptor layout
  * @next:         MM2S/S2MM Next Descriptor Pointer
- * @reserved1:    Reserved and not used
+ * @reserved1:    Reserved and not used for 32-bit
  * @phys:         MM2S/S2MM Buffer Address
- * @reserved2:    Reserved and not used
+ * @reserved2:    Reserved and not used for 32-bit
  * @reserved3:    Reserved and not used
  * @reserved4:    Reserved and not used
  * @cntrl:        MM2S/S2MM Control value
@@ -526,10 +530,14 @@
  * @tx_desc_mapping: Tx Descriptor DMA mapping type.
  */
 struct axidma_bd {
-	u32 next;	/* Physical address of next buffer descriptor */
+	phys_addr_t next;	/* Physical address of next buffer descriptor */
+#ifndef CONFIG_PHYS_ADDR_T_64BIT
 	u32 reserved1;
-	u32 phys;
+#endif
+	phys_addr_t phys;
+#ifndef CONFIG_PHYS_ADDR_T_64BIT
 	u32 reserved2;
+#endif
 	u32 reserved3;
 	u32 reserved4;
 	u32 cntrl;
@@ -550,9 +558,9 @@ struct axidma_bd {
 /**
  * struct aximcdma_bd - Axi MCDMA buffer descriptor layout
  * @next:         MM2S/S2MM Next Descriptor Pointer
- * @reserved1:    Reserved and not used
+ * @reserved1:    Reserved and not used for 32-bit
  * @phys:         MM2S/S2MM Buffer Address
- * @reserved2:    Reserved and not used
+ * @reserved2:    Reserved and not used for 32-bit
  * @reserved3:    Reserved and not used
  * @cntrl:        MM2S/S2MM Control value
  * @status:       S2MM Status value
@@ -572,10 +580,14 @@ struct axidma_bd {
  * @tx_desc_mapping: Tx Descriptor DMA mapping type.
  */
 struct aximcdma_bd {
-	u32 next;	/* Physical address of next buffer descriptor */
+	phys_addr_t next;	/* Physical address of next buffer descriptor */
+#ifndef CONFIG_PHYS_ADDR_T_64BIT
 	u32 reserved1;
-	u32 phys;
+#endif
+	phys_addr_t phys;
+#ifndef CONFIG_PHYS_ADDR_T_64BIT
 	u32 reserved2;
+#endif
 	u32 reserved3;
 	u32 cntrl;
 	u32 status;
@@ -683,6 +695,7 @@ enum axienet_tsn_ioctl {
  * @chan_id:  MCMDA Channel id used in conjunction with weight parameter.
  * @weight:   MCDMA Channel weight value to be configured for.
  * @usxgmii_rate: USXGMII PHY speed.
+ * @dma_mask: Specify the width of the DMA address space.
  */
 struct axienet_local {
 	struct net_device *ndev;
@@ -778,6 +791,7 @@ struct axienet_local {
 	u16 weight;
 
 	u32 usxgmii_rate;
+	u8 dma_mask;
 };
 
 /**
