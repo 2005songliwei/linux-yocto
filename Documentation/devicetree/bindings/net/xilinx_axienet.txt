@@ -62,7 +62,6 @@ Optional properties:
 		  required through the core's MDIO interface (i.e. always,
 		  unless the PHY is accessed through a different bus).
 - xlnx,rxtsfifo 	: Configures the axi fifo for receive timestamping.
-- xlnx,include-dre	: Tells whether DMA h/w is configured with DRE or not.
 - clocks		: Input clock specifier. Refer to common clock bindings.
 - clock-names		: Input clock names. Refer to IP PG for signal description.
 			  1G/2.5G: s_axi_lite_clk, axis_clk and ref_clk.
@@ -79,6 +78,8 @@ Optional properties (When USXGMII is in use):
 Optional properties for connected DMA node:
 - xlnx,addrwidth	: Specify the width of the DMA address space in bits.
 			  Valid range is 32-64. Default is 32.
+- xlnx,include-dre	: Tells whether DMA h/w is configured with data
+			  realignment engine(DRE) or not.
 
 NOTE: Time Sensitive Networking (TSN) related DT bindings are explained in [4].
 
