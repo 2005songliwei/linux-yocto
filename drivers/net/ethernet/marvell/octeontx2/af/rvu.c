@@ -424,14 +424,14 @@ static void rvu_check_block_implemented(struct rvu *rvu)
 static void rvu_setup_rvum_blk_revid(struct rvu *rvu)
 {
 	rvu_write64(rvu, BLKADDR_RVUM,
-		    RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM),
-		    RVU_BLK_RVUM_REVID);
+		RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM),
+		RVU_BLK_RVUM_REVID);
 }
 
 static void rvu_clear_rvum_blk_revid(struct rvu *rvu)
 {
 	rvu_write64(rvu, BLKADDR_RVUM,
-		    RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM), 0x00);
+		RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM), 0x00);
 }
 
 int rvu_lf_reset(struct rvu *rvu, struct rvu_block *block, int lf)
