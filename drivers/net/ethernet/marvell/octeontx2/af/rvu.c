@@ -2252,6 +2252,7 @@ static void rvu_unregister_interrupts(struct rvu *rvu)
 	int irq;
 
 	rvu_npa_unregister_interrupts(rvu);
+	rvu_nix_unregister_interrupts(rvu);
 	rvu_cpt_unregister_interrupts(rvu);
 
 	/* Disable the Mbox interrupt */
@@ -2463,6 +2464,10 @@ static int rvu_register_interrupts(struct rvu *rvu)
 	rvu->irq_allocated[offset] = true;
 
 	ret = rvu_npa_register_interrupts(rvu);
+	if (ret)
+		goto fail;
+
+	ret = rvu_nix_register_interrupts(rvu);
 	if (ret)
 		goto fail;
 
@@ -2736,7 +2741,6 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_flr;
 
 	rvu_setup_rvum_blk_revid(rvu);
-
 	err = rvu_policy_init(rvu);
 	if (err)
 		goto err_irq;
