@@ -42,6 +42,11 @@ Optional property:
 				    Some MACs work with differential SGMII clock.
 				    See data manual for details.
 
+	- ti,6-wire-mode - This denotes the fact that the board has SGMII
+				    6-wire mode configuration. If this
+				    property is not present default is 4-wire
+				    mode. See data manual for details.
+
 Note: ti,min-output-impedance and ti,max-output-impedance are mutually
       exclusive. When both properties are present ti,max-output-impedance
       takes precedence.
