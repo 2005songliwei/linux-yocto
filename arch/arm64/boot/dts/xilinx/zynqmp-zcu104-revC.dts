@@ -2,7 +2,7 @@
 /*
  * dts file for Xilinx ZynqMP ZCU104
  *
- * (C) Copyright 2017 - 2019, Xilinx, Inc.
+ * (C) Copyright 2017 - 2018, Xilinx, Inc.
  *
  * Michal Simek <michal.simek@xilinx.com>
  */
@@ -13,10 +13,11 @@
 #include "zynqmp-clk-ccf.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/pinctrl-zynqmp.h>
+#include <dt-bindings/phy/phy.h>
 
 / {
-	model = "ZynqMP ZCU104 RevA";
-	compatible = "xlnx,zynqmp-zcu104-revA", "xlnx,zynqmp-zcu104", "xlnx,zynqmp";
+	model = "ZynqMP ZCU104 RevC";
+	compatible = "xlnx,zynqmp-zcu104-revC", "xlnx,zynqmp-zcu104", "xlnx,zynqmp";
 
 	aliases {
 		ethernet0 = &gem3;
@@ -34,6 +35,7 @@
 	chosen {
 		bootargs = "earlycon";
 		stdout-path = "serial0:115200n8";
+		xlnx,eeprom = &eeprom;
 	};
 
 	memory@0 {
@@ -44,9 +46,43 @@
 
 &can1 {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_can1_default>;
 };
 
 &dcc {
+	status = "okay";
+};
+
+&fpd_dma_chan1 {
+	status = "okay";
+};
+
+&fpd_dma_chan2 {
+	status = "okay";
+};
+
+&fpd_dma_chan3 {
+	status = "okay";
+};
+
+&fpd_dma_chan4 {
+	status = "okay";
+};
+
+&fpd_dma_chan5 {
+	status = "okay";
+};
+
+&fpd_dma_chan6 {
+	status = "okay";
+};
+
+&fpd_dma_chan7 {
+	status = "okay";
+};
+
+&fpd_dma_chan8 {
 	status = "okay";
 };
 
@@ -54,7 +90,9 @@
 	status = "okay";
 	phy-handle = <&phy0>;
 	phy-mode = "rgmii-id";
-	phy0: ethernet-phy@c {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_gem3_default>;
+	phy0: phy@c {
 		reg = <0xc>;
 		ti,rx-internal-delay = <0x8>;
 		ti,tx-internal-delay = <0xa>;
@@ -79,6 +117,25 @@
 	pinctrl-1 = <&pinctrl_i2c1_gpio>;
 	scl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
 	sda-gpios = <&gpio 17 GPIO_ACTIVE_HIGH>;
+
+	tca6416_u97: gpio@20 {
+		compatible = "ti,tca6416";
+		reg = <0x20>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		/*
+		  * IRQ not connected
+		  * Lines:
+		  * 0 - IRPS5401_ALERT_B
+		  * 1 - HDMI_8T49N241_INT_ALM
+		  * 2 - MAX6643_OT_B
+		  * 3 - MAX6643_FANFAIL_B
+		  * 5 - IIC_MUX_RESET_B
+		  * 6 - GEM3_EXP_RESET_B
+		  * 7 - FMC_LPC_PRSNT_M2C_B
+		  * 4, 10 - 17 - not connected
+		  */
+	};
 
 	/* Another connection to this bus via PL i2c via PCA9306 - u45 */
 	i2c-mux@74 { /* u34 */
@@ -132,27 +189,14 @@
 			};
 		};
 
-		i2c@4 {
+		i2c@3 {
 			#address-cells = <1>;
 			#size-cells = <0>;
-			reg = <4>;
-			tca6416_u97: gpio@20 {
-				compatible = "ti,tca6416";
-				reg = <0x20>;
-				gpio-controller;
-				#gpio-cells = <2>;
-				/*
-				 * IRQ not connected
-				 * Lines:
-				 * 0 - IRPS5401_ALERT_B
-				 * 1 - HDMI_8T49N241_INT_ALM
-				 * 2 - MAX6643_OT_B
-				 * 3 - MAX6643_FANFAIL_B
-				 * 5 - IIC_MUX_RESET_B
-				 * 6 - GEM3_EXP_RESET_B
-				 * 7 - FMC_LPC_PRSNT_M2C_B
-				 * 4, 10 - 17 - not connected
-				 */
+			reg = <3>;
+			ina226@40 { /* u183 */
+				compatible = "ti,ina226";
+				reg = <0x40>;
+				shunt-resistor = <5000>;
 			};
 		};
 
@@ -168,7 +212,7 @@
 			reg = <7>;
 		};
 
-		/* 3, 6 not connected */
+		/* 4, 6 not connected */
 	};
 };
 
@@ -414,29 +458,90 @@
 	ceva,p1-comwake-params = /bits/ 8 <0x06 0x14 0x08 0x0E>;
 	ceva,p1-burst-params = /bits/ 8 <0x13 0x08 0x4A 0x06>;
 	ceva,p1-retry-params = /bits/ 16 <0x96A4 0x3FFC>;
+	phy-names = "sata-phy";
+	phys = <&lane3 PHY_TYPE_SATA 1 1 125000000>;
 };
 
 /* SD1 with level shifter */
 &sdhci1 {
 	status = "okay";
 	no-1-8-v;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_sdhci1_default>;
+	xlnx,mio_bank = <1>;
 	disable-wp;
+};
+
+&serdes {
+	status = "okay";
 };
 
 &uart0 {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart0_default>;
 };
 
 &uart1 {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1_default>;
 };
 
 /* ULPI SMSC USB3320 */
 &usb0 {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_usb0_default>;
+};
+
+&dwc3_0 {
+	status = "okay";
 	dr_mode = "host";
+	snps,usb3_lpm_capable;
+	phy-names = "usb3-phy";
+	phys = <&lane2 PHY_TYPE_USB3 0 2 26000000>;
+	maximum-speed = "super-speed";
 };
 
 &watchdog0 {
+	status = "okay";
+};
+
+&xilinx_ams {
+	status = "okay";
+};
+
+&ams_ps {
+	status = "okay";
+};
+
+&ams_pl {
+	status = "okay";
+};
+
+&zynqmp_dpsub {
+	status = "okay";
+	phy-names = "dp-phy0", "dp-phy1";
+	phys = <&lane1 PHY_TYPE_DP 0 3 27000000>, <&lane0 PHY_TYPE_DP 1 3 27000000>;
+};
+
+&zynqmp_dp_snd_pcm0 {
+	status = "okay";
+};
+
+&zynqmp_dp_snd_pcm1 {
+	status = "okay";
+};
+
+&zynqmp_dp_snd_card0 {
+	status = "okay";
+};
+
+&zynqmp_dp_snd_codec0 {
+	status = "okay";
+};
+
+&xlnx_dpdma {
 	status = "okay";
 };
