@@ -192,6 +192,7 @@ struct npc_mcam {
 	/* fields present in the generated key */
 	struct npc_key_field	key_fields[NPC_KEY_FIELDS_MAX];
 	u64	features;
+	struct list_head mcam_rules;
 };
 
 struct sso_rsrc {
@@ -265,6 +266,8 @@ struct rvu_pfvf {
 
 	bool	cgx_in_use; /* this PF/VF using CGX? */
 	int	cgx_users;  /* number of cgx users - used only by PFs */
+
+	struct rvu_npc_mcam_rule *def_rule;
 };
 
 struct nix_txsch {
@@ -567,6 +570,9 @@ static inline void rvu_dbg_exit(struct rvu *rvu) {}
 
 int npc_flow_steering_init(struct rvu *rvu, int blkaddr);
 const char *npc_get_field_name(u8 hdr);
+int rvu_npc_write_default_rule(struct rvu *rvu, int blkaddr, int nixlf,
+			       u16 pcifunc, u8 intf, struct mcam_entry *entry);
+int npc_mcam_verify_channel(struct rvu *rvu, u16 pcifunc, u8 intf, u16 channel);
 
 /* CPT APIs */
 int rvu_cpt_init(struct rvu *rvu);
