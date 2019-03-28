@@ -963,7 +963,7 @@ static int ulite_probe(struct platform_device *pdev)
 err_out_clk_disable:
 	clk_disable(pdata->clk);
 err_out_unregister_driver:
-	uart_unregister_driver(pdata->ulite_uart_driver);
+	uart_unregister_driver(ulite_uart_driver);
 err_out_id:
 	mutex_lock(&bitmap_lock);
 	clear_bit(pdata->id, bitmap);
