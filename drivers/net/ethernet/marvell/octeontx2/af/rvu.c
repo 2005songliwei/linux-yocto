@@ -2333,6 +2333,10 @@ static int rvu_register_interrupts(struct rvu *rvu)
 
 	rvu->irq_allocated[RVU_AF_INT_VEC_MBOX] = true;
 
+	/* Clear TRPEND bit for all PF */
+	rvu_write64(rvu, BLKADDR_RVUM,
+		    RVU_AF_PFTRPEND, INTR_MASK(rvu->hw->total_pfs));
+
 	/* Enable mailbox interrupts from all PFs */
 	rvu_enable_mbox_intr(rvu);
 
@@ -2706,6 +2710,7 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_release_regions;
 	}
 
+	pci_set_master(pdev);
 	rvu->ptp = ptp_get();
 	if (IS_ERR(rvu->ptp)) {
 		err = PTR_ERR(rvu->ptp);
