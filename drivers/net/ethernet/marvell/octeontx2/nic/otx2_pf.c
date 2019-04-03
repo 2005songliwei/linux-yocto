@@ -1171,6 +1171,7 @@ int otx2_set_real_num_queues(struct net_device *netdev,
 			   "Failed to set no of Rx queues: %d\n", rx_queues);
 	return err;
 }
+EXPORT_SYMBOL(otx2_set_real_num_queues);
 
 static void otx2_alloc_rxvlan(struct otx2_nic *pf)
 {
@@ -1705,6 +1706,7 @@ err_free_mem:
 	kfree(qset->napi);
 	return err;
 }
+EXPORT_SYMBOL(otx2_open);
 
 int otx2_stop(struct net_device *netdev)
 {
@@ -1766,6 +1768,7 @@ int otx2_stop(struct net_device *netdev)
 	       sizeof(*qset) - offsetof(struct otx2_qset, sqe_cnt));
 	return 0;
 }
+EXPORT_SYMBOL(otx2_stop);
 
 static netdev_tx_t otx2_xmit(struct sk_buff *skb, struct net_device *netdev)
 {

@@ -927,6 +927,7 @@ void otx2_cleanup_tx_cqes(struct otx2_nic *pfvf, struct otx2_cq_queue *cq)
 	otx2_write64(pfvf, NIX_LF_CQ_OP_DOOR,
 		     ((u64)cq->cq_idx << 32) | processed_cqe);
 }
+EXPORT_SYMBOL(otx2_sq_append_skb);
 
 int otx2_rxtx_enable(struct otx2_nic *pfvf, bool enable)
 {
