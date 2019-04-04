@@ -1836,14 +1836,17 @@ int rvu_mbox_handler_nix_txschq_cfg(struct rvu *rvu,
 		return 0;
 	}
 
+	rvu_nix_txsch_lock(nix_hw);
 	for (idx = 0; idx < req->num_regs; idx++) {
 		reg = req->reg[idx];
 		regval = req->regval[idx];
 		schq_regbase = reg & 0xFFFF;
 
 		if (!is_txschq_hierarchy_valid(rvu, pcifunc, blkaddr,
-					       txsch->lvl, reg, regval))
+					       txsch->lvl, reg, regval)) {
+			rvu_nix_txsch_unlock(nix_hw);
 			return NIX_AF_INVAL_TXSCHQ_CFG;
+		}
 
 		/* Check if shaping and coloring is supported */
 		if (!is_txschq_shaping_valid(hw, req->lvl, reg))
@@ -1887,6 +1890,8 @@ int rvu_mbox_handler_nix_txschq_cfg(struct rvu *rvu,
 		rvu_write64(rvu, blkaddr, reg, regval);
 	}
 
+	rvu_nix_txsch_config_changed(nix_hw);
+	rvu_nix_txsch_unlock(nix_hw);
 	return 0;
 }
 
@@ -2869,6 +2874,8 @@ linkcfg:
 	cfg &= ~(0xFFFFFULL << 12);
 	cfg |=  ((lmac_fifo_len - req->maxlen) / 16) << 12;
 	rvu_write64(rvu, blkaddr, NIX_AF_TX_LINKX_NORM_CREDIT(link), cfg);
+	rvu_nix_update_link_credits(rvu, blkaddr, link, cfg);
+
 	return 0;
 }
 
@@ -3165,6 +3172,9 @@ int rvu_nix_init(struct rvu *rvu)
 		/* Enable Channel backpressure */
 		rvu_write64(rvu, blkaddr, NIX_AF_RX_CFG, BIT_ULL(0));
 
+		err = rvu_nix_fixes_init(rvu, hw->nix0, blkaddr);
+		if (err)
+			return err;
 	}
 	return 0;
 }
@@ -3199,6 +3209,7 @@ void rvu_nix_freemem(struct rvu *rvu)
 		qmem_free(rvu->dev, mcast->mce_ctx);
 		qmem_free(rvu->dev, mcast->mcast_buf);
 		mutex_destroy(&mcast->mce_lock);
+		rvu_nix_fixes_exit(rvu, nix_hw);
 	}
 }
 

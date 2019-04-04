@@ -314,6 +314,7 @@ struct nix_hw {
 	struct nix_flowkey flowkey;
 	struct nix_mark_format mark_format;
 	struct nix_lso lso;
+	void   *tx_stall;
 };
 
 /* RVU block's capabilities or functionality,
@@ -620,4 +621,15 @@ int rvu_tim_init(struct rvu *rvu);
 int rvu_lf_lookup_tim_errata(struct rvu *rvu, struct rvu_block *block,
 		u16 pcifunc, int slot);
 
+/* HW workarounds/fixes */
+void rvu_nix_txsch_lock(struct nix_hw *nix_hw);
+void rvu_nix_txsch_unlock(struct nix_hw *nix_hw);
+void rvu_nix_update_link_credits(struct rvu *rvu, int blkaddr,
+				 int link, u64 ncredits);
+
+void rvu_nix_txsch_config_changed(struct nix_hw *nix_hw);
+ssize_t rvu_nix_get_tx_stall_counters(struct rvu *rvu,
+				      char __user *buffer, loff_t *ppos);
+int rvu_nix_fixes_init(struct rvu *rvu, struct nix_hw *nix_hw, int blkaddr);
+void rvu_nix_fixes_exit(struct rvu *rvu, struct nix_hw *nix_hw);
 #endif /* RVU_H */
