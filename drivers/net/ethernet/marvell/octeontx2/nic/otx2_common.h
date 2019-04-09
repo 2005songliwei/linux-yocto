@@ -219,6 +219,7 @@ struct otx2_nic {
 
 	u16			bpid[NIX_MAX_BPID_CHAN];
 	u16			pcifunc; /* RVU PF_FUNC */
+	u8			total_vfs;
 	struct cgx_link_user_info linfo;
 
 	u64			reset_count;
