@@ -215,7 +215,9 @@ struct otx2_nic {
 
 	/* Mbox */
 	struct mbox		mbox;
+	struct mbox		*mbox_pfvf;
 	struct workqueue_struct *mbox_wq;
+	struct workqueue_struct *mbox_pfvf_wq;
 
 	u16			bpid[NIX_MAX_BPID_CHAN];
 	u16			pcifunc; /* RVU PF_FUNC */
