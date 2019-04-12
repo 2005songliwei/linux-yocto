@@ -755,6 +755,26 @@ static void otx2_process_pfaf_mbox_msg(struct otx2_nic *pf,
 		return;
 	}
 
+	/* message response heading VF */
+	devid = msg->pcifunc & RVU_PFVF_FUNC_MASK;
+	if (devid) {
+		struct otx2_vf_config *config = &pf->vf_configs[devid - 1];
+		struct delayed_work *dwork;
+
+		switch (msg->id) {
+		case MBOX_MSG_NIX_LF_START_RX:
+			config->intf_down = false;
+			dwork = &config->link_event_work;
+			schedule_delayed_work(dwork, msecs_to_jiffies(100));
+			break;
+		case MBOX_MSG_NIX_LF_STOP_RX:
+			config->intf_down = true;
+			break;
+		}
+
+		return;
+	}
+
 	switch (msg->id) {
 	case MBOX_MSG_READY:
 		pf->pcifunc = msg->pcifunc;
@@ -820,7 +840,6 @@ static void otx2_handle_link_event(struct otx2_nic *pf)
 	struct cgx_link_user_info *linfo = &pf->linfo;
 	struct net_device *netdev = pf->netdev;
 
-	pf->linfo = msg->link_info;
 	pr_info("%s NIC Link is %s %d Mbps %s duplex\n", netdev->name,
 		linfo->link_up ? "UP" : "DOWN", linfo->speed,
 		linfo->full_duplex ? "Full" : "Half");
@@ -860,6 +879,7 @@ int otx2_mbox_up_handler_cgx_link_event(struct otx2_nic *pf,
 	otx2_handle_link_event(pf);
 	return 0;
 }
+EXPORT_SYMBOL(otx2_mbox_up_handler_cgx_link_event);
 
 static int otx2_process_mbox_msg_up(struct otx2_nic *pf,
 				    struct mbox_msghdr *req)

@@ -118,20 +118,29 @@ static int otx2vf_process_mbox_msg_up(struct otx2_nic *vf,
 	}
 
 	switch (req->id) {
-	case MBOX_MSG_CGX_LINK_EVENT:
-		rsp = (struct msg_rsp *)otx2_mbox_alloc_msg(
-						&vf->mbox.mbox_up, 0,
-						sizeof(struct msg_rsp));
-		if (!rsp)
-			return -ENOMEM;
-
-		rsp->hdr.id = MBOX_MSG_CGX_LINK_EVENT;
-		rsp->hdr.sig = OTX2_MBOX_RSP_SIG;
-		rsp->hdr.pcifunc = 0;
-		rsp->hdr.rc = 0;
-		err = otx2_mbox_up_handler_cgx_link_event(
-				vf, (struct cgx_link_info_msg *)req, rsp);
-		return err;
+#define M(_name, _id, _fn_name, _req_type, _rsp_type)			\
+	case _id: {							\
+		struct _rsp_type *rsp;					\
+		int err;						\
+									\
+		rsp = (struct _rsp_type *)otx2_mbox_alloc_msg(		\
+			&vf->mbox.mbox_up, 0,				\
+			sizeof(struct _rsp_type));			\
+		if (!rsp)						\
+			return -ENOMEM;					\
+									\
+		rsp->hdr.id = _id;					\
+		rsp->hdr.sig = OTX2_MBOX_RSP_SIG;			\
+		rsp->hdr.pcifunc = 0;					\
+		rsp->hdr.rc = 0;					\
+									\
+		err = otx2_mbox_up_handler_ ## _fn_name(		\
+			vf, (struct _req_type *)req, rsp);		\
+		return err;						\
+	}
+MBOX_UP_CGX_MESSAGES
+#undef M
+		break;
 	default:
 		otx2_reply_invalid_msg(&vf->mbox.mbox_up, 0, 0, req->id);
 		return -ENODEV;
