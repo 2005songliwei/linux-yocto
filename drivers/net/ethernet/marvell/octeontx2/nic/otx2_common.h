@@ -199,6 +199,12 @@ struct refill_work {
 
 struct otx2_ptp;
 
+struct otx2_vf_config {
+	struct otx2_nic *pf;
+	struct delayed_work link_event_work;
+	bool intf_down; /* interface was either configured or not */
+};
+
 struct flr_work {
 	struct work_struct work;
 	struct otx2_nic *pf;
@@ -228,6 +234,7 @@ struct otx2_nic {
 	u16			bpid[NIX_MAX_BPID_CHAN];
 	u16			pcifunc; /* RVU PF_FUNC */
 	u8			total_vfs;
+	struct otx2_vf_config	*vf_configs;
 	struct cgx_link_user_info linfo;
 
 	u64			reset_count;
