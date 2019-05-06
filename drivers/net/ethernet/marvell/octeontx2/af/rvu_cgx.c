@@ -526,6 +526,7 @@ static void cgx_notify_up_ptp_info(struct rvu *rvu, int pf, bool enable)
 int rvu_mbox_handler_cgx_ptp_rx_enable(struct rvu *rvu, struct msg_req *req,
 				       struct msg_rsp *rsp)
 {
+	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, req->hdr.pcifunc);
 	u16 pcifunc = req->hdr.pcifunc;
 	int pf = rvu_get_pf(pcifunc);
 	u8 cgx_id, lmac_id;
@@ -549,6 +550,8 @@ int rvu_mbox_handler_cgx_ptp_rx_enable(struct rvu *rvu, struct msg_req *req,
 	 */
 	if (npc_config_ts_kpuaction(rvu, pf, pcifunc, true))
 		return -EINVAL;
+	/* This flag is required to clean up CGX conf if app gets killed */
+	pfvf->hw_rx_tstamp_en = true;
 
 	return 0;
 }
@@ -556,6 +559,7 @@ int rvu_mbox_handler_cgx_ptp_rx_enable(struct rvu *rvu, struct msg_req *req,
 int rvu_mbox_handler_cgx_ptp_rx_disable(struct rvu *rvu, struct msg_req *req,
 					struct msg_rsp *rsp)
 {
+	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, req->hdr.pcifunc);
 	u16 pcifunc = req->hdr.pcifunc;
 	int pf = rvu_get_pf(pcifunc);
 	u8 cgx_id, lmac_id;
@@ -577,6 +581,8 @@ int rvu_mbox_handler_cgx_ptp_rx_disable(struct rvu *rvu, struct msg_req *req,
 	/* Inform NPC that 8B shift is cancelled */
 	if (npc_config_ts_kpuaction(rvu, pf, pcifunc, false))
 		return -EINVAL;
+
+	pfvf->hw_rx_tstamp_en = false;
 
 	return 0;
 }
