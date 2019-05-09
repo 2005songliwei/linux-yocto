@@ -2,7 +2,7 @@
 /*
  * Cadence WDT driver - Used by Xilinx Zynq
  *
- * Copyright (C) 2010 - 2014 Xilinx, Inc.
+ * Copyright (C) 2010 - 2019 Xilinx, Inc.
  *
  */
 
@@ -328,7 +328,10 @@ static int cdns_wdt_probe(struct platform_device *pdev)
 	/* Initialize the members of cdns_wdt structure */
 	cdns_wdt_device->parent = dev;
 
-	watchdog_init_timeout(cdns_wdt_device, wdt_timeout, dev);
+	ret = watchdog_init_timeout(cdns_wdt_device, wdt_timeout, dev);
+	if (ret)
+		dev_warn(&pdev->dev, "unable to set timeout value\n");
+
 	watchdog_set_nowayout(cdns_wdt_device, nowayout);
 	watchdog_stop_on_reboot(cdns_wdt_device);
 	watchdog_set_drvdata(cdns_wdt_device, wdt);
