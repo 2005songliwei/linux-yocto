@@ -1505,6 +1505,7 @@ exit:
 static void otx2_free_hw_resources(struct otx2_nic *pf)
 {
 	struct otx2_qset *qset = &pf->qset;
+	struct nix_lf_free_req *free_req;
 	struct mbox *mbox = &pf->mbox;
 	struct otx2_cq_queue *cq;
 	struct msg_req *req;
@@ -1547,6 +1548,7 @@ static void otx2_free_hw_resources(struct otx2_nic *pf)
 	/* Reset NIX LF */
 	req = otx2_mbox_alloc_msg_nix_lf_free(mbox);
 	if (req) {
+		free_req->flags = NIX_LF_DISABLE_FLOWS;
 		if (otx2_sync_mbox_msg(mbox))
 			dev_err(pf->dev, "%s failed to free nixlf\n", __func__);
 	}

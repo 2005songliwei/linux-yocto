@@ -331,12 +331,12 @@ struct rvu_npc_mcam_rule {
 	u64 vtag_action;
 	struct list_head list;
 	u64 features;
-	u16 pcifunc;
+	u16 owner;
 	u16 entry;
 	u16 cntr;
 	bool has_cntr;
 	u8 default_rule;
-	bool is_vf;
+	bool enable;
 };
 
 #endif /* NPC_H */
