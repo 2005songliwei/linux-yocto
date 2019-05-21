@@ -64,6 +64,12 @@ properties:
           - const: xlnx,zynqmp-zcu1275
           - const: xlnx,zynqmp
 
+      - description: Xilinx RFSoC chracterization kit zcu1285
+        items:
+          - const: xlnx,zynqmp-zcu1285-revA
+          - const: xlnx,zynqmp-zcu1285
+          - const: xlnx,zynqmp
+
       - description: Xilinx 96boards compatible board zcu100
         items:
           - const: xlnx,zynqmp-zcu100-revC
