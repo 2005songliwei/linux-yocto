@@ -4083,8 +4083,6 @@ static int spi_nor_parse_bfpt(struct spi_nor *nor,
 	}
 	params->size >>= 3; /* Convert to bytes. */
 
-	if (params->size > 0x1000000 && nor->addr_width == 3)
-		return -EINVAL;
 
 	/* Fast Read settings. */
 	for (i = 0; i < ARRAY_SIZE(sfdp_bfpt_reads); i++) {
@@ -4102,6 +4100,8 @@ static int spi_nor_parse_bfpt(struct spi_nor *nor,
 		half = bfpt.dwords[rd->settings_dword] >> rd->settings_shift;
 		spi_nor_set_read_settings_from_bfpt(read, half, rd->proto);
 	}
+	if (params->size > 0x1000000 && nor->addr_width == 3)
+		return -EINVAL;
 
 	/*
 	 * Sector Erase settings. Reinitialize the uniform erase map using the
