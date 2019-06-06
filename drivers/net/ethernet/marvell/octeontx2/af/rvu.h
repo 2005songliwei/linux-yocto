@@ -553,6 +553,7 @@ void rvu_cgx_enadis_rx_bp(struct rvu *rvu, int pf, bool enable);
 int rvu_cgx_start_stop_io(struct rvu *rvu, u16 pcifunc, bool start);
 int rvu_cgx_nix_cuml_stats(struct rvu *rvu, void *cgxd, int lmac_id, int index,
 			   int rxtxflag, u64 *stat);
+void rvu_cgx_disable_dmac_entries(struct rvu *rvu, u16 pcifunc);
 /* SSO APIs */
 int rvu_sso_init(struct rvu *rvu);
 void rvu_sso_freemem(struct rvu *rvu);
