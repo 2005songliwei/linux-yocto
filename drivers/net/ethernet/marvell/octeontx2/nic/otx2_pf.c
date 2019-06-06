@@ -107,11 +107,6 @@ static void otx2_flr_handler(struct work_struct *work)
 
 	vf = flrwork - pf->flr_wrk;
 
-	/* Delete ethtool ntuple filters for the VF before FLR */
-	if (otx2_delete_ethtool_flows_for_vf(pf, vf + 1))
-		dev_err(pf->dev, "Unable to delete VF%d ntuple filters\n",
-			vf);
-
 	mutex_lock(&mbox->lock);
 	req = otx2_mbox_alloc_msg_vf_flr(mbox);
 	if (!req) {
@@ -1756,7 +1751,6 @@ int otx2_stop(struct net_device *netdev)
 
 	/* First stop packet Rx/Tx */
 	otx2_rxtx_enable(pf, false);
-	otx2_destroy_ethtool_flows(pf);
 
 	/* Cleanup Queue IRQ */
 	vec = pci_irq_vector(pf->pdev,
@@ -2527,7 +2521,6 @@ static int otx2_sriov_disable(struct pci_dev *pdev)
 	if (!numvfs)
 		return 0;
 
-	otx2_delete_vf_ethtool_flows(pf);
 	pci_disable_sriov(pdev);
 
 	for (i = 0; i < pci_num_vf(pdev); i++)
