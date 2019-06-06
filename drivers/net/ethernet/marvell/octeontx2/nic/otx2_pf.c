@@ -2269,6 +2269,7 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pf->dev = dev;
 	pf->total_vfs = pci_sriov_get_totalvfs(pdev);
 	pf->flags |= OTX2_FLAG_INTF_DOWN;
+	pf->intf_down = true;
 
 	hw = &pf->hw;
 	hw->pdev = pdev;
