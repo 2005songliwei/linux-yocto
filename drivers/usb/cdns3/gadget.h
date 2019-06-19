@@ -1079,7 +1079,6 @@ struct cdns3_trb {
 #define CDNS3_EP_ZLP_BUF_SIZE		1024
 
 #define CDNS3_EP_BUF_SIZE		2	/* KB */
-define ENDPOINT_ZLP_BUF_SIZE          1024
 #define CDNS3_UNALIGNED_BUF_SIZE       16384 /* Bytes */
 #define CDNS3_EP_ISO_HS_MULT		3
 #define CDNS3_EP_ISO_SS_BURST		3
@@ -1125,7 +1124,7 @@ struct cdns3_endpoint {
 	struct usb_ep		endpoint;
 	struct list_head	pending_req_list;
 	struct list_head	deferred_req_list;
-	struct list_head	wa2_descmiss_req_list;
+	struct list_head        descmiss_req_list;
 	int			wa2_counter;
 
 	struct cdns3_trb	*trb_pool;
@@ -1135,7 +1134,7 @@ struct cdns3_endpoint {
 	char			name[20];
 
 #define EP_ENABLED		BIT(0)
-#define EP_STALLED		BIT(1)
+#define EP_STALL                BIT(1)
 #define EP_STALL_PENDING	BIT(2)
 #define EP_WEDGE		BIT(3)
 #define EP_TRANSFER_STARTED	BIT(4)
@@ -1283,7 +1282,7 @@ struct cdns3_device {
 	struct cdns3_endpoint		*eps[CDNS3_ENDPOINTS_MAX_COUNT];
 
 	struct list_head		aligned_buf_list;
-	struct work_struct		aligned_buf_wq;
+	unsigned                        run_garbage_colector:1;
 
 	u32				selected_ep;
 	u16				isoch_delay;
@@ -1300,10 +1299,11 @@ struct cdns3_device {
 
 	struct work_struct		pending_status_wq;
 	struct usb_request		*pending_status_request;
+	u32                             shadow_ep_en;
 
 	/*in KB */
-	u16				onchip_buffers;
-	u16				onchip_used_size;
+	int                             onchip_mem_allocated_size;
+	unsigned                        start_gadget:1;
 };
 
 void cdns3_set_register_bit(void __iomem *ptr, u32 mask);
