@@ -24,6 +24,11 @@
 
 #define OTX2_DEFAULT_ACTION	0x1
 
+static const char otx2_priv_flags_strings[][ETH_GSTRING_LEN] = {
+#define OTX2_PRIV_FLAGS_PAM4 BIT(0)
+	"pam4",
+};
+
 struct otx2_stat {
 	char name[ETH_GSTRING_LEN];
 	unsigned int index;
@@ -103,6 +108,12 @@ static void otx2_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 	int stats;
+
+	if (sset == ETH_SS_PRIV_FLAGS) {
+		memcpy(data, otx2_priv_flags_strings,
+		       ARRAY_SIZE(otx2_priv_flags_strings) * ETH_GSTRING_LEN);
+		return;
+	}
 
 	if (sset != ETH_SS_STATS)
 		return;
@@ -192,6 +203,9 @@ static int otx2_get_sset_count(struct net_device *netdev, int sset)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 	int qstats_count;
+
+	if (sset == ETH_SS_PRIV_FLAGS)
+		return ARRAY_SIZE(otx2_priv_flags_strings);
 
 	if (sset != ETH_SS_STATS)
 		return -EINVAL;
@@ -1338,7 +1352,7 @@ end:	mutex_unlock(&pfvf->mbox.lock);
 	return err;
 }
 
-static const struct ethtool_ops otx2_ethtool_ops = {
+static struct ethtool_ops otx2_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
 				     ETHTOOL_COALESCE_MAX_FRAMES,
 	.get_link		= otx2_get_link,
@@ -1370,8 +1384,67 @@ static const struct ethtool_ops otx2_ethtool_ops = {
 	.get_module_eeprom	= otx2_get_module_eeprom,
 };
 
+static int otx2_set_priv_flags(struct net_device *netdev, u32 priv_flags)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_phy_mod_type *req, *rsp;
+	int rc = 0;
+
+	mutex_lock(&pfvf->mbox.lock);
+	req = otx2_mbox_alloc_msg_cgx_set_phy_mod_type(&pfvf->mbox);
+	if (!req) {
+		rc = -EAGAIN;
+		goto end;
+	}
+	req->mod = priv_flags & OTX2_PRIV_FLAGS_PAM4;
+	rc = otx2_sync_mbox_msg(&pfvf->mbox);
+	if (rc)
+		goto end;
+
+	rsp = (struct cgx_phy_mod_type *)otx2_mbox_get_rsp(&pfvf->mbox.mbox, 0,
+							   &req->hdr);
+	if (IS_ERR(rsp)) {
+		rc = PTR_ERR(rsp);
+		goto end;
+	}
+	if (rsp->hdr.rc) {
+		rc = rsp->hdr.rc;
+		goto end;
+	}
+
+end:	mutex_unlock(&pfvf->mbox.lock);
+	return rc;
+}
+
+static u32 otx2_get_priv_flags(struct net_device *netdev)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+	u32 priv_flags = 0;
+
+	rsp = otx2_get_fwdata(pfvf);
+
+	if (IS_ERR(rsp))
+		return 0;
+
+	if (rsp->fwdata.phy.mod_type)
+		priv_flags |= OTX2_PRIV_FLAGS_PAM4;
+
+	return priv_flags;
+}
+
 void otx2_set_ethtool_ops(struct net_device *netdev)
 {
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+
+	rsp = otx2_get_fwdata(pfvf);
+
+	if (!IS_ERR(rsp) && rsp->fwdata.phy.can_change_mod_type) {
+		otx2_ethtool_ops.set_priv_flags = otx2_set_priv_flags;
+		otx2_ethtool_ops.get_priv_flags = otx2_get_priv_flags;
+	}
+
 	netdev->ethtool_ops = &otx2_ethtool_ops;
 }
 
