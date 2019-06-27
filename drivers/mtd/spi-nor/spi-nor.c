@@ -254,6 +254,7 @@ struct flash_info {
 #define	SST_GLOBAL_PROT_UNLK	BIT(16)	/* Unlock the Global protection for
 					 * sst flashes
 					 */
+#define SPI_NOR_OCTAL_WRITE	BIT(17) /* Flash supports Octal Write */
 
 	/* Part specific fixup hooks. */
 	const struct spi_nor_fixups *fixups;
@@ -2660,7 +2661,7 @@ static const struct flash_info spi_nor_ids[] = {
 	{
 		"mt35xu512aba", INFO(0x2c5b1a, 0, 128 * 1024, 512,
 			SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
-			SPI_NOR_4B_OPCODES)
+			SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
 	},
 	{ "mt35xu02g",  INFO(0x2c5b1c, 0, 128 * 1024, 2048,
 			     SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
@@ -4965,7 +4966,12 @@ static void spi_nor_info_init_params(struct spi_nor *nor)
 	}
 
 	/* Page Program settings. */
-	if (nor->spi->mode & SPI_TX_QUAD) {
+	if (info->flags & SPI_NOR_OCTAL_WRITE) {
+		params->hwcaps.mask |= SNOR_HWCAPS_PP_1_1_8;
+		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_1_1_8],
+					SPINOR_OP_PP_1_1_8, SNOR_PROTO_1_1_8);
+	}
+	if (nor->spi && (nor->spi->mode & SPI_TX_QUAD)) {
 		params->hwcaps.mask |= SNOR_HWCAPS_PP_1_1_4;
 		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_1_1_4],
 					SPINOR_OP_PP_1_1_4, SNOR_PROTO_1_1_4);
