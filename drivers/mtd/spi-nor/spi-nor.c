@@ -2546,6 +2546,12 @@ static const struct flash_info spi_nor_ids[] = {
 			SPI_NOR_4B_OPCODES | SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
 			.fixups = &gd25q256_fixups,
 	},
+	{
+		"mt35xu02g", INFO(0x2c5b1c, 0, 128 * 1024, 2048,
+			SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
+			SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
+	},
+
 
 	/* Intel/Numonyx -- xxxs33b */
 	{ "160s33b",  INFO(0x898911, 0, 64 * 1024,  32, 0) },
