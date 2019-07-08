@@ -1168,22 +1168,72 @@ fec_restart(struct net_device *ndev)
 
 }
 
-static void fec_enet_stop_mode(struct fec_enet_private *fep, bool enabled)
+#ifdef CONFIG_IMX_SCU_SOC
+static int fec_enet_ipc_handle_init(struct fec_enet_private *fep)
+{
+	if (!(of_machine_is_compatible("fsl,imx8qm") ||
+		of_machine_is_compatible("fsl,imx8qxp")))
+		return 0;
+
+	return imx_scu_get_handle(&fep->ipc_handle);
+}
+static void fec_enet_ipg_stop_set(struct fec_enet_private *fep, bool enabled)
+{
+	struct device_node *np = fep->pdev->dev.of_node;
+	u32 rsrc_id, val;
+	int idx;
+
+	if (!np || !fep->ipc_handle)
+		return;
+
+	idx = of_alias_get_id(np, "ethernet");
+	if (idx < 0)
+		idx = 0;
+	rsrc_id = idx ? IMX_SC_R_ENET_1 : IMX_SC_R_ENET_0;
+
+	val = enabled ? 1 : 0;
+	imx_sc_misc_set_control(fep->ipc_handle, rsrc_id, IMX_SC_IPG_STOP, val);
+}
+#else
+static int fec_enet_ipc_handle_init(struct fec_enet_private *fep)
+{
+	return 0;
+}
+
+static void fec_enet_ipg_stop_set(struct fec_enet_private *fep, bool enabled) {}
+#endif
+
+static void fec_enet_enter_stop_mode(struct fec_enet_private *fep)
 {
 	struct fec_platform_data *pdata = fep->pdev->dev.platform_data;
-	struct fec_stop_mode_gpr *stop_gpr = &fep->stop_gpr;
 
-	if (stop_gpr->gpr) {
-		if (enabled)
-			regmap_update_bits(stop_gpr->gpr, stop_gpr->reg,
-					   BIT(stop_gpr->bit),
-					   BIT(stop_gpr->bit));
-		else
-			regmap_update_bits(stop_gpr->gpr, stop_gpr->reg,
-					   BIT(stop_gpr->bit), 0);
-	} else if (pdata && pdata->sleep_mode_enable) {
-		pdata->sleep_mode_enable(enabled);
-	}
+	if (!IS_ERR_OR_NULL(fep->lpm.gpr))
+		regmap_update_bits(fep->lpm.gpr, fep->lpm.req_gpr,
+				1 << fep->lpm.req_bit,
+				1 << fep->lpm.req_bit);
+	else if (pdata && pdata->sleep_mode_enable)
+		pdata->sleep_mode_enable(true);
+	else
+		fec_enet_ipg_stop_set(fep, true);
+}
+
+static void fec_enet_exit_stop_mode(struct fec_enet_private *fep)
+{
+	struct fec_platform_data *pdata = fep->pdev->dev.platform_data;
+
+	if (!IS_ERR_OR_NULL(fep->lpm.gpr))
+		regmap_update_bits(fep->lpm.gpr, fep->lpm.req_gpr,
+				1 << fep->lpm.req_bit, 0);
+	else if (pdata && pdata->sleep_mode_enable)
+		pdata->sleep_mode_enable(false);
+	else
+		fec_enet_ipg_stop_set(fep, false);
+}
+
+static inline void fec_irqs_disable(struct net_device *ndev)
+{
+	struct fec_enet_private *fep = netdev_priv(ndev);
+	writel(0, fep->hwp + FEC_IMASK);
 }
 
 static void
@@ -2838,15 +2888,10 @@ fec_enet_set_wol(struct net_device *ndev, struct ethtool_wolinfo *wol)
 		return -EINVAL;
 
 	device_set_wakeup_enable(&ndev->dev, wol->wolopts & WAKE_MAGIC);
-	if (device_may_wakeup(&ndev->dev)) {
+	if (device_may_wakeup(&ndev->dev))
 		fep->wol_flag |= FEC_WOL_FLAG_ENABLE;
-		if (fep->irq[0] > 0)
-			enable_irq_wake(fep->irq[0]);
-	} else {
+	else
 		fep->wol_flag &= (~FEC_WOL_FLAG_ENABLE);
-		if (fep->irq[0] > 0)
-			disable_irq_wake(fep->irq[0]);
-	}
 
 	return 0;
 }
@@ -3652,6 +3697,41 @@ static int fec_enet_get_irq_cnt(struct platform_device *pdev)
 	return irq_cnt;
 }
 
+static void fec_enet_of_parse_stop_mode(struct platform_device *pdev)
+{
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct device_node *np = pdev->dev.of_node;
+	struct fec_enet_private *fep = netdev_priv(dev);
+	struct device_node *node;
+	phandle phandle;
+        u32 out_val[3];
+        int ret;
+
+        ret = of_property_read_u32_array(np, "stop-mode", out_val, 3);
+        if (ret) {
+                dev_dbg(&pdev->dev, "no stop-mode property\n");
+                return;
+        }
+
+        phandle = *out_val;
+        node = of_find_node_by_phandle(phandle);
+        if (!node) {
+                dev_dbg(&pdev->dev, "could not find gpr node by phandle\n");
+                return;
+        }
+
+        fep->lpm.gpr = syscon_node_to_regmap(node);
+        if (IS_ERR(fep->lpm.gpr)) {
+                dev_dbg(&pdev->dev, "could not find gpr regmap\n");
+                return;
+        }
+
+        of_node_put(node);
+
+        fep->lpm.req_gpr = out_val[1];
+        fep->lpm.req_bit = out_val[2];
+}
+
 static int fec_enet_init_stop_mode(struct fec_enet_private *fep,
 				   struct fec_devinfo *dev_info,
 				   struct device_node *np)
@@ -3747,6 +3827,11 @@ fec_probe(struct platform_device *pdev)
 	     of_machine_is_compatible("fsl,imx6dl")) &&
 	    !of_property_read_bool(np, "fsl,err006687-workaround-present"))
 		fep->quirks |= FEC_QUIRK_ERR006687;
+
+	fec_enet_of_parse_stop_mode(pdev);
+	ret = fec_enet_ipc_handle_init(fep);
+	if (ret)
+		goto failed_ipc_init;
 
 	if (of_get_property(np, "fsl,magic-packet", NULL))
 		fep->wol_flag |= FEC_WOL_HAS_MAGIC_PACKET;
@@ -3888,6 +3973,13 @@ fec_probe(struct platform_device *pdev)
 		fep->irq[i] = irq;
 	}
 
+	/* get wake up irq */
+	ret = of_property_read_u32(np, "fsl, wakeup_irq", &irq);
+	if (!ret && irq < irq_cnt)
+		fep->wake_irq = fep->irq[irq];
+	else
+		fep->wake_irq = fep->irq[0];
+
 	init_completion(&fep->mdio_done);
 	ret = fec_enet_mii_init(pdev);
 	if (ret)
@@ -3939,6 +4031,7 @@ failed_clk:
 		of_phy_deregister_fixed_link(np);
 	of_node_put(phy_node);
 failed_stop_mode:
+failed_ipc_init:
 failed_phy:
 	dev_id--;
 failed_ioremap:
@@ -3994,9 +4087,14 @@ static int __maybe_unused fec_suspend(struct device *dev)
 		netif_device_detach(ndev);
 		netif_tx_unlock_bh(ndev);
 		fec_stop(ndev);
-		fec_enet_clk_enable(ndev, false);
-		if (!(fep->wol_flag & FEC_WOL_FLAG_ENABLE))
+		if (!(fep->wol_flag & FEC_WOL_FLAG_ENABLE)) {
+			fec_irqs_disable(ndev);
 			pinctrl_pm_select_sleep_state(&fep->pdev->dev);
+		} else {
+			disable_irq(fep->wake_irq);
+			enable_irq_wake(fep->wake_irq);
+		}
+		fec_enet_clk_enable(ndev, false);
 	}
 	rtnl_unlock();
 
@@ -4033,8 +4131,9 @@ static int __maybe_unused fec_resume(struct device *dev)
 			goto failed_clk;
 		}
 		if (fep->wol_flag & FEC_WOL_FLAG_ENABLE) {
-			fec_enet_stop_mode(fep, false);
-
+			disable_irq_wake(fep->wake_irq);
+			fec_enet_exit_stop_mode(fep);
+			enable_irq(fep->wake_irq);
 			val = readl(fep->hwp + FEC_ECNTRL);
 			val &= ~(FEC_ECR_MAGICEN | FEC_ECR_SLEEP);
 			writel(val, fep->hwp + FEC_ECNTRL);
