@@ -26,8 +26,6 @@
 #define DRV_NAME	"octeontx2-nicpf"
 #define DRV_STRING	"Marvell OcteonTX2 NIC Physical Function Driver"
 
-#define MAX_ETHTOOL_FLOWS	36
-
 /* Supported devices */
 static const struct pci_device_id otx2_pf_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, PCI_DEVID_OCTEONTX2_RVU_PF) },
@@ -1740,7 +1738,7 @@ static void otx2_set_rx_mode(struct net_device *netdev)
 	queue_work(pf->otx2_wq, &pf->rx_mode_work);
 }
 
-static void otx2_do_set_rx_mode(struct work_struct *work)
+void otx2_do_set_rx_mode(struct work_struct *work)
 {
 	struct otx2_nic *pf = container_of(work, struct otx2_nic, rx_mode_work);
 	struct net_device *netdev = pf->netdev;
@@ -1748,6 +1746,10 @@ static void otx2_do_set_rx_mode(struct work_struct *work)
 
 	if (!(netdev->flags & IFF_UP))
 		return;
+
+	/* Write unicast address to mcam entries or del from mcam */
+	if (netdev->priv_flags & IFF_UNICAST_FLT)
+		__dev_uc_sync(netdev, otx2_add_macfilter, otx2_del_macfilter);
 
 	mutex_lock(&pf->mbox.lock);
 	req = otx2_mbox_alloc_msg_nix_set_rx_mode(&pf->mbox);
@@ -1758,7 +1760,6 @@ static void otx2_do_set_rx_mode(struct work_struct *work)
 
 	req->mode = NIX_RX_MODE_UCAST;
 
-	/* We don't support MAC address filtering yet */
 	if (netdev->flags & IFF_PROMISC)
 		req->mode |= NIX_RX_MODE_PROMISC;
 	else if (netdev->flags & (IFF_ALLMULTI | IFF_MULTICAST))
@@ -1780,7 +1781,7 @@ static int otx2_set_features(struct net_device *netdev,
 						features & NETIF_F_LOOPBACK);
 
 	if ((changed & NETIF_F_NTUPLE) && !ntuple)
-		otx2_destroy_ethtool_flows(pf);
+		otx2_destroy_ntuple_flows(pf);
 
 	return 0;
 }
@@ -2248,6 +2249,7 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netdev->features |= netdev->hw_features;
 
 	netdev->hw_features |= NETIF_F_LOOPBACK | NETIF_F_RXALL | NETIF_F_NTUPLE;
+	netdev->priv_flags |= IFF_UNICAST_FLT;
 
 	netdev->gso_max_segs = OTX2_MAX_GSO_SEGS;
 	netdev->watchdog_timeo = OTX2_TX_TIMEOUT;
@@ -2268,8 +2270,10 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (err)
 		goto err_unreg_netdev;
 
-	INIT_LIST_HEAD(&pf->flows);
-	pf->max_flows = MAX_ETHTOOL_FLOWS;
+	err = otx2_mcam_flow_init(pf);
+	if (err)
+		goto err_unreg_netdev;
+
 	otx2_set_ethtool_ops(netdev);
 
 	/* Enable link notifications */
@@ -2459,7 +2463,7 @@ static void otx2_remove(struct pci_dev *pdev)
 		destroy_workqueue(pf->otx2_wq);
 
 	otx2_ptp_destroy(pf);
-	otx2_destroy_ethtool_flows(pf);
+	otx2_mcam_flow_del(pf);
 	otx2_detach_resources(&pf->mbox);
 	otx2_disable_mbox_intr(pf);
 	otx2_pfaf_mbox_destroy(pf);
