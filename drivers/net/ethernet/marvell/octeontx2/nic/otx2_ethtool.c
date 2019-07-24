@@ -1319,7 +1319,7 @@ static int otx2vf_get_link_ksettings(struct net_device *netdev,
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 
-	if (pfvf->pdev->device ==  PCI_DEVID_OCTEONTX2_RVU_AFVF) {
+	if (is_otx2_lbkvf(pfvf->pdev)) {
 		cmd->base.port = PORT_OTHER;
 		cmd->base.duplex = DUPLEX_FULL;
 		cmd->base.speed = SPEED_100000;
