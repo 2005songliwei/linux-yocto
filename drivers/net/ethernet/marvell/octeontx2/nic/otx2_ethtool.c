@@ -864,6 +864,8 @@ static u32 otx2_get_link(struct net_device *netdev)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return 1;
 	return pfvf->linfo.link_up;
 }
 
@@ -1314,7 +1316,7 @@ static int otx2vf_get_link_ksettings(struct net_device *netdev,
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 
-	if (pfvf->pdev->device ==  PCI_DEVID_OCTEONTX2_RVU_AFVF) {
+	if (is_otx2_lbkvf(pfvf->pdev)) {
 		cmd->base.port = PORT_OTHER;
 		cmd->base.duplex = DUPLEX_FULL;
 		cmd->base.speed = SPEED_100000;
@@ -1324,6 +1326,7 @@ static int otx2vf_get_link_ksettings(struct net_device *netdev,
 	return 0;
 }
 static const struct ethtool_ops otx2vf_ethtool_ops = {
+	.get_link		= otx2_get_link,
 	.get_drvinfo		= otx2vf_get_drvinfo,
 	.get_strings		= otx2vf_get_strings,
 	.get_ethtool_stats	= otx2vf_get_ethtool_stats,
