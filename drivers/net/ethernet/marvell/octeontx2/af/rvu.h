@@ -652,10 +652,9 @@ void rvu_cpt_unregister_interrupts(struct rvu *rvu);
 /* TIM APIs */
 int rvu_tim_init(struct rvu *rvu);
 int rvu_tim_lf_teardown(struct rvu *rvu, u16 pcifunc, int lf, int slot);
-int rvu_lf_lookup_tim_errata(struct rvu *rvu, struct rvu_block *block,
-		u16 pcifunc, int slot);
 
 /* HW workarounds/fixes */
+#include "npc.h"
 void rvu_nix_txsch_lock(struct nix_hw *nix_hw);
 void rvu_nix_txsch_unlock(struct nix_hw *nix_hw);
 void rvu_nix_update_link_credits(struct rvu *rvu, int blkaddr,
@@ -668,4 +667,9 @@ ssize_t rvu_nix_get_tx_stall_counters(struct rvu *rvu,
 				      char __user *buffer, loff_t *ppos);
 int rvu_nix_fixes_init(struct rvu *rvu, struct nix_hw *nix_hw, int blkaddr);
 void rvu_nix_fixes_exit(struct rvu *rvu, struct nix_hw *nix_hw);
+int rvu_tim_lookup_rsrc(struct rvu *rvu, struct rvu_block *block,
+			u16 pcifunc, int slot);
+int rvu_npc_get_tx_nibble_cfg(struct rvu *rvu, u64 nibble_ena);
+bool is_parse_nibble_config_valid(struct rvu *rvu,
+				  struct npc_mcam_kex *mcam_kex);
 #endif /* RVU_H */
