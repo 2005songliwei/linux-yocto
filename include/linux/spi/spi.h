@@ -123,6 +123,7 @@ void spi_statistics_add_transfer_stats(struct spi_statistics *stats,
  *	the spi_master.
  * @cs_gpiod: gpio descriptor of the chipselect line (optional, NULL when
  *	not using a GPIO line)
+ * @multi_die: Flash device with multiple dies.
  * @word_delay_usecs: microsecond delay to be inserted between consecutive
  *	words of a transfer
  *
@@ -172,6 +173,7 @@ struct spi_device {
 	char			modalias[SPI_NAME_SIZE];
 	const char		*driver_override;
 	int			cs_gpio;	/* LEGACY: chip select gpio */
+	bool			multi_die;	/* flash with multiple dies*/
 	struct gpio_desc	*cs_gpiod;	/* chip select gpio desc */
 	uint8_t			word_delay_usecs; /* inter-word delay */
 
