@@ -434,6 +434,13 @@ static void otx2vf_reset_task(struct work_struct *work)
 	rtnl_unlock();
 }
 
+static netdev_features_t
+otx2_features_check(struct sk_buff *skb, struct net_device *dev,
+		    netdev_features_t features)
+{
+	return features;
+}
+
 static const struct net_device_ops otx2vf_netdev_ops = {
 	.ndo_open = otx2vf_open,
 	.ndo_stop = otx2vf_stop,
@@ -442,6 +449,7 @@ static const struct net_device_ops otx2vf_netdev_ops = {
 	.ndo_change_mtu = otx2vf_change_mtu,
 	.ndo_get_stats64 = otx2_get_stats64,
 	.ndo_tx_timeout = otx2_tx_timeout,
+	.ndo_features_check = otx2_features_check,
 };
 
 static int otx2vf_realloc_msix_vectors(struct otx2_nic *vf)
@@ -572,7 +580,10 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			      NETIF_F_IPV6_CSUM | NETIF_F_RXHASH |
 			      NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6;
 	netdev->features = netdev->hw_features;
-
+	/* Support TSO on tag interface */
+	netdev->vlan_features |= netdev->features;
+	netdev->features  |= NETIF_F_HW_VLAN_CTAG_TX |
+			     NETIF_F_HW_VLAN_STAG_TX;
 	netdev->gso_max_segs = OTX2_MAX_GSO_SEGS;
 	netdev->watchdog_timeo = OTX2_TX_TIMEOUT;
 
