@@ -611,8 +611,10 @@ static void cgx_notify_up_ptp_info(struct rvu *rvu, int pf, bool enable)
 
 	/* Send mbox message to PF */
 	msg = otx2_mbox_alloc_msg_cgx_ptp_rx_info(rvu, pf);
-	if (!msg)
-		dev_err(rvu->dev, "failed to alloc message\n");
+	if (!msg) {
+		dev_err(rvu->dev, "ptp notification to pf %d failed\n", pf);
+		return;
+	}
 
 	msg->ptp_en = enable;
 	otx2_mbox_msg_send(&rvu->afpf_wq_info.mbox_up, pf);
