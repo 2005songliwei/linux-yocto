@@ -649,3 +649,7 @@
 &vpu_g2 {
 	status = "okay";
 };
+
+&vpu_h1 {
+	status = "okay";
+};
