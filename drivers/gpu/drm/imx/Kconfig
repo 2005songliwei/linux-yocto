@@ -49,6 +49,8 @@ config DRM_IMX_HDMI
 	help
 	  Choose this if you want to use HDMI on i.MX6.
 
+source "drivers/gpu/drm/imx/dcss/Kconfig"
+
 config DRM_IMX_CDNS_MHDP
 	tristate "NXP i.MX MX8 DRM HDMI/DP"
 	select DRM_CDNS_MHDP
