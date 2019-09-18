@@ -71,4 +71,5 @@ config DRM_IMX_SEC_DSIM
 	  found on i.MX platform.
 
 source "drivers/gpu/drm/imx/lcdif/Kconfig"
+source "drivers/gpu/drm/imx/lcdifv3/Kconfig"
 source "drivers/gpu/drm/imx/dpu/Kconfig"
