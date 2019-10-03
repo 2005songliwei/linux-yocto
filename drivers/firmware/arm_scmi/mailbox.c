@@ -180,5 +180,5 @@ const struct scmi_desc scmi_mailbox_desc = {
 	.ops = &scmi_mailbox_ops,
 	.max_rx_timeout_ms = 300, /* We may increase this if required */
 	.max_msg = 20, /* Limited by MBOX_TX_QUEUE_LEN */
-	.max_msg_size = 128,
+	.max_msg_size = 256,
 };
