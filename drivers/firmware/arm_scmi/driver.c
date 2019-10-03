@@ -1046,7 +1046,7 @@ ATTRIBUTE_GROUPS(versions);
 static const struct scmi_desc scmi_generic_desc = {
 	.max_rx_timeout_ms = 300,	/* We may increase this if required */
 	.max_msg = 20,		/* Limited by MBOX_TX_QUEUE_LEN */
-	.max_msg_size = 128,
+	.max_msg_size = 256,
 };
 
 /* Each compatible listed below must have descriptor associated with it */
