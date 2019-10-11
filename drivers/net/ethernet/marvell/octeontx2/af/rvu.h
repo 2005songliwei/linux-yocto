@@ -650,11 +650,14 @@ static inline void rvu_dbg_exit(struct rvu *rvu) {}
 
 int npc_flow_steering_init(struct rvu *rvu, int blkaddr);
 const char *npc_get_field_name(u8 hdr);
-int rvu_npc_write_default_rule(struct rvu *rvu, int blkaddr, int nixlf,
-			       u16 pcifunc, u8 intf, struct mcam_entry *entry);
+bool rvu_npc_write_default_rule(struct rvu *rvu, int blkaddr, int nixlf,
+				u16 pcifunc, u8 intf, struct mcam_entry *entry,
+				int *entry_index);
 int npc_mcam_verify_channel(struct rvu *rvu, u16 pcifunc, u8 intf, u16 channel);
 int npc_get_bank(struct npc_mcam *mcam, int index);
 void npc_mcam_enable_flows(struct rvu *rvu, u16 target);
+void npc_enable_mcam_entry(struct rvu *rvu, struct npc_mcam *mcam,
+			   int blkaddr, int index, bool enable);
 
 /* CPT APIs */
 int rvu_cpt_init(struct rvu *rvu);
