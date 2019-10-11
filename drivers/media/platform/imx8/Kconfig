@@ -3,7 +3,7 @@ menu "IMX8 Camera ISI/MIPI Features support"
 
 config IMX8_MIPI_CSI2_YAV
 	tristate "IMX8 MIPI CSI2 Controller Yet Another Version"
-	default y
+	default m
 
 endmenu
 endif #VIDEO_MX8_CAPTURE
