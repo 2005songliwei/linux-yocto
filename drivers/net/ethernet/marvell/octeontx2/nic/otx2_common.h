@@ -13,6 +13,7 @@
 
 #include <linux/pci.h>
 #include <linux/iommu.h>
+#include <linux/ptp_clock_kernel.h>
 
 #include <mbox.h>
 #include "otx2_reg.h"
@@ -200,11 +201,20 @@ struct refill_work {
 	struct otx2_nic *pf;
 };
 
-struct otx2_ptp;
+struct otx2_ptp {
+	struct ptp_clock_info ptp_info;
+	struct ptp_clock *ptp_clock;
+	struct otx2_nic *nic;
+
+	struct cyclecounter cycle_counter;
+	struct timecounter time_counter;
+	bool ptp_en;
+};
 
 struct otx2_vf_config {
 	struct otx2_nic *pf;
 	struct delayed_work link_event_work;
+	struct delayed_work ptp_info_work;
 	bool intf_down; /* interface was either configured or not */
 	u8 mac[ETH_ALEN];
 	u16 vlan;
