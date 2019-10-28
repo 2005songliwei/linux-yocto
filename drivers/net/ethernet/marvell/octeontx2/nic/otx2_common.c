@@ -228,7 +228,8 @@ int otx2_hw_set_mtu(struct otx2_nic *pfvf, int mtu)
 		return -ENOMEM;
 	}
 
-	pfvf->max_frs = mtu +  OTX2_ETH_HLEN;
+	/* Add EDSA/HIGIG2 header len to maxlen */
+	pfvf->max_frs = mtu +  OTX2_ETH_HLEN + pfvf->addl_mtu;
 	req->maxlen = pfvf->max_frs;
 
 	err = otx2_sync_mbox_msg(&pfvf->mbox);
