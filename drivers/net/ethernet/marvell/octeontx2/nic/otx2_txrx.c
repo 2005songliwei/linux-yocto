@@ -123,7 +123,8 @@ static void otx2_snd_pkt_handler(struct otx2_nic *pfvf,
 	sg->skb = (u64)NULL;
 }
 
-static inline void otx2_set_rxtstamp(struct otx2_nic *pfvf, struct sk_buff *skb)
+static inline void otx2_set_rxtstamp(struct otx2_nic *pfvf,
+				     struct sk_buff *skb, void *data)
 {
 	u64 tsns;
 	int err;
@@ -132,14 +133,11 @@ static inline void otx2_set_rxtstamp(struct otx2_nic *pfvf, struct sk_buff *skb)
 		return;
 
 	/* The first 8 bytes is the timestamp */
-	err = otx2_ptp_tstamp2time(pfvf, be64_to_cpu(*(u64 *)skb->data), &tsns);
+	err = otx2_ptp_tstamp2time(pfvf, be64_to_cpu(*(u64 *)data), &tsns);
 	if (err)
-		goto done;
+		return;
 
 	skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(tsns);
-
-done:
-	__skb_pull(skb, 8);
 }
 
 static void otx2_skb_add_frag(struct otx2_nic *pfvf, struct sk_buff *skb,
@@ -170,6 +168,24 @@ static void otx2_skb_add_frag(struct otx2_nic *pfvf, struct sk_buff *skb,
 
 	otx2_dma_unmap_page(pfvf, iova - OTX2_HEAD_ROOM,
 			    pfvf->rbsize, DMA_FROM_DEVICE);
+}
+
+static inline void otx2_set_taginfo(struct nix_rx_parse_s *parse,
+				    struct sk_buff *skb)
+{
+	/* Check if VLAN is present, captured and stripped from packet */
+	if (parse->vtag0_valid && parse->vtag0_gone) {
+		skb_frag_t *frag0 = &skb_shinfo(skb)->frags[0];
+
+		/* Is the tag captured STAG or CTAG ? */
+		if (((struct ethhdr *)skb_frag_address(frag0))->h_proto ==
+		    htons(ETH_P_8021Q))
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021AD),
+					       parse->vtag0_tci);
+		else
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+					       parse->vtag0_tci);
+	}
 }
 
 static void otx2_set_rxhash(struct otx2_nic *pfvf,
@@ -284,17 +300,7 @@ static void otx2_rcv_pkt_handler(struct otx2_nic *pfvf,
 	if (pfvf->netdev->features & NETIF_F_RXCSUM)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 
-	/* This holds true on condition RX VLAN offloads are enabled and
-	 * 802.1AD or 802.1Q VLANs were found in frame.
-	 */
-	if (parse->vtag0_gone) {
-		if (skb->protocol == htons(ETH_P_8021Q))
-			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021AD),
-					       parse->vtag0_tci);
-		else
-			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
-					       parse->vtag0_tci);
-	}
+	otx2_set_taginfo(parse, skb);
 
 	napi_gro_frags(napi);
 }
