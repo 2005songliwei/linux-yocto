@@ -669,6 +669,10 @@ void rvu_cpt_unregister_interrupts(struct rvu *rvu);
 int rvu_tim_init(struct rvu *rvu);
 int rvu_tim_lf_teardown(struct rvu *rvu, u16 pcifunc, int lf, int slot);
 
+/* SDP APIs */
+int rvu_sdp_init(struct rvu *rvu);
+bool is_sdp_pf(u16 pcifunc);
+
 /* HW workarounds/fixes */
 #include "npc.h"
 void rvu_nix_txsch_lock(struct nix_hw *nix_hw);
