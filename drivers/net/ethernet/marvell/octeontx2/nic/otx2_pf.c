@@ -1602,16 +1602,16 @@ int otx2_open(struct net_device *netdev)
 	if (pf->linfo.link_up && !(pf->pcifunc & RVU_PFVF_FUNC_MASK))
 		otx2_handle_link_event(pf);
 
-	if (otx2_nic_is_feature_enabled(pf, OTX2_RX_VLAN_OFFLOAD_CAPABLE))
+	if (pf->flags & OTX2_FLAG_RX_VLAN_SUPPORT)
 		otx2_enable_rxvlan(pf, true);
 
-	/* When reinitializing enable time stamping if it is enabled before */
-	if (pf->hw_tx_tstamp) {
-		pf->hw_tx_tstamp = 0;
+	/* When reinitializing enable time stamping if it was enabled before */
+	if (pf->flags & OTX2_FLAG_TX_TSTAMP_ENABLED) {
+		pf->flags &= ~OTX2_FLAG_TX_TSTAMP_ENABLED;
 		otx2_config_hw_tx_tstamp(pf, true);
 	}
-	if (pf->hw_rx_tstamp) {
-		pf->hw_rx_tstamp = 0;
+	if (pf->flags & OTX2_FLAG_RX_TSTAMP_ENABLED) {
+		pf->flags &= ~OTX2_FLAG_RX_TSTAMP_ENABLED;
 		otx2_config_hw_rx_tstamp(pf, true);
 	}
 
@@ -1827,7 +1827,7 @@ static int otx2_config_hw_rx_tstamp(struct otx2_nic *pfvf, bool enable)
 	struct msg_req *req;
 	int err;
 
-	if (!!pfvf->hw_rx_tstamp == enable)
+	if (pfvf->flags & OTX2_FLAG_RX_TSTAMP_ENABLED && enable)
 		return 0;
 
 	otx2_mbox_lock(&pfvf->mbox);
@@ -1847,7 +1847,10 @@ static int otx2_config_hw_rx_tstamp(struct otx2_nic *pfvf, bool enable)
 	}
 
 	otx2_mbox_unlock(&pfvf->mbox);
-	pfvf->hw_rx_tstamp = enable;
+	if (enable)
+		pfvf->flags |= OTX2_FLAG_RX_TSTAMP_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_RX_TSTAMP_ENABLED;
 	return 0;
 }
 
@@ -1856,7 +1859,7 @@ static int otx2_config_hw_tx_tstamp(struct otx2_nic *pfvf, bool enable)
 	struct msg_req *req;
 	int err;
 
-	if (!!pfvf->hw_tx_tstamp == enable)
+	if (pfvf->flags & OTX2_FLAG_TX_TSTAMP_ENABLED && enable)
 		return 0;
 
 	otx2_mbox_lock(&pfvf->mbox);
@@ -1876,7 +1879,10 @@ static int otx2_config_hw_tx_tstamp(struct otx2_nic *pfvf, bool enable)
 	}
 
 	otx2_mbox_unlock(&pfvf->mbox);
-	pfvf->hw_tx_tstamp = enable;
+	if (enable)
+		pfvf->flags |= OTX2_FLAG_TX_TSTAMP_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_TX_TSTAMP_ENABLED;
 	return 0;
 }
 
@@ -2176,7 +2182,7 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pf->flags |= OTX2_FLAG_INTF_DOWN;
 
 	pf->total_vfs = pci_sriov_get_totalvfs(pdev);
-	pf->intf_down = true;
+	pf->flags |= OTX2_FLAG_INTF_DOWN;
 
 	hw = &pf->hw;
 	hw->pdev = pdev;
@@ -2486,9 +2492,9 @@ static void otx2_remove(struct pci_dev *pdev)
 
 	pf = netdev_priv(netdev);
 
-	if (pf->hw_tx_tstamp)
+	if (pf->flags & OTX2_FLAG_TX_TSTAMP_ENABLED)
 		otx2_config_hw_tx_tstamp(pf, false);
-	if (pf->hw_rx_tstamp)
+	if (pf->flags & OTX2_FLAG_RX_TSTAMP_ENABLED)
 		otx2_config_hw_rx_tstamp(pf, false);
 
 	/* Disable link notifications */

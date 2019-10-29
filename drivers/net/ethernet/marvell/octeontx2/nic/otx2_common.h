@@ -239,7 +239,13 @@ struct otx2_nic {
 	u16			xtra_hdr;
 	u16			rbsize; /* Receive buffer size */
 
+#define OTX2_FLAG_RX_TSTAMP_ENABLED		BIT_ULL(0)
+#define OTX2_FLAG_TX_TSTAMP_ENABLED		BIT_ULL(1)
 #define OTX2_FLAG_INTF_DOWN			BIT_ULL(2)
+#define OTX2_FLAG_MCAM_ENTRIES_ALLOC		BIT_ULL(3)
+#define OTX2_FLAG_NTUPLE_SUPPORT		BIT_ULL(4)
+#define OTX2_FLAG_UCAST_FLTR_SUPPORT		BIT_ULL(5)
+#define OTX2_FLAG_RX_VLAN_SUPPORT		BIT_ULL(6)
 	u64			flags;
 
 	struct otx2_qset	qset;
@@ -272,11 +278,6 @@ struct otx2_nic {
 	bool			entries_alloc;
 	u32			nr_flows;
 	u32                     ntuple_max_flows;
-#define OTX2_NTUPLE_FILTER_CAPABLE		0
-#define OTX2_UNICAST_FILTER_CAPABLE		1
-#define OTX2_RX_VLAN_OFFLOAD_CAPABLE		2
-	unsigned long           priv_flags;
-
 	u16			entry_list[NPC_MAX_NONCONTIG_ENTRIES];
 	struct list_head	flows;
 	struct workqueue_struct	*flr_wq;
@@ -727,19 +728,4 @@ int otx2_enable_rxvlan(struct otx2_nic *pf, bool enable);
 int otx2smqvf_probe(struct otx2_nic *vf);
 int otx2smqvf_remove(struct otx2_nic *vf);
 
-/* OTX2_NIC access priv_flags */
-static inline void otx2_nic_enable_feature(struct otx2_nic *pf,
-					   unsigned long nr) {
-	set_bit(nr, &pf->priv_flags);
-}
-
-static inline void otx2_nic_disable_feature(struct otx2_nic *pf,
-					    unsigned long nr) {
-	clear_bit(nr, &pf->priv_flags);
-}
-
-static inline int otx2_nic_is_feature_enabled(struct otx2_nic *pf,
-					      unsigned long nr) {
-	return test_bit(nr, &pf->priv_flags);
-}
 #endif /* OTX2_COMMON_H */
