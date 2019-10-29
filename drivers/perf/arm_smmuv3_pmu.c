@@ -294,7 +294,10 @@ static int smmu_pmu_apply_event_filter(struct smmu_pmu *smmu_pmu,
 	idx = find_first_bit(smmu_pmu->used_counters, num_ctrs);
 	if (idx == num_ctrs ||
 	    smmu_pmu_check_global_filter(smmu_pmu->events[idx], event)) {
-		smmu_pmu_set_event_filter(event, 0, span, sid);
+		if (idx == 0)
+			smmu_pmu_set_event_filter(event, 0, span, sid);
+		else
+			smmu_pmu_set_event_filter(event, idx, 0, 0);
 		return 0;
 	}
 
