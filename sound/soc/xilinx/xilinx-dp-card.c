@@ -42,11 +42,13 @@ SND_SOC_DAILINK_DEFS(pcm,
 static struct snd_soc_dai_link xilinx_dp_dai_links[] = {
 	{
 		.name		= "xilinx-dp0",
+		.stream_name	= "xilinx-dp0",
 		.ops		= &xilinx_dp_ops,
 		SND_SOC_DAILINK_REG(pcm),
 	},
 	{
 		.name		= "xilinx-dp1",
+		.stream_name	= "xilinx-dp1",
 		.ops		= &xilinx_dp_ops,
 		SND_SOC_DAILINK_REG(pcm),
 	},
