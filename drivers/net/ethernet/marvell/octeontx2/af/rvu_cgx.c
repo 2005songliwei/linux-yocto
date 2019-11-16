@@ -951,6 +951,16 @@ int rvu_mbox_handler_cgx_get_phy_mod_type(struct rvu *rvu, struct msg_req *req,
 	return 0;
 }
 
+int rvu_mbox_handler_cgx_get_phy_fec_stats(struct rvu *rvu, struct msg_req *req,
+					   struct msg_rsp *rsp)
+{
+	int pf = rvu_get_pf(req->hdr.pcifunc);
+	u8 cgx_id, lmac_id;
+
+	rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx_id, &lmac_id);
+	return cgx_get_phy_fec_stats(rvu_cgx_pdata(cgx_id, rvu), lmac_id);
+}
+
 int rvu_mbox_handler_cgx_set_link_mode(struct rvu *rvu,
 				       struct cgx_set_link_mode_req *req,
 				       struct cgx_set_link_mode_rsp *rsp)
