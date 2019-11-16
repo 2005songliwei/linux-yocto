@@ -85,6 +85,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	iqaudio-dacplus.dtbo \
 	iqaudio-digi-wm8804-audio.dtbo \
 	jedec-spi-nor.dtbo \
+	justboom-both.dtbo \
 	justboom-dac.dtbo \
 	justboom-digi.dtbo \
 	ltc294x.dtbo \
