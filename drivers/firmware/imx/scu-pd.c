@@ -48,6 +48,7 @@
 #include <dt-bindings/firmware/imx/rsrc.h>
 #include <linux/console.h>
 #include <linux/firmware/imx/sci.h>
+#include <linux/firmware/imx/svc/rm.h>
 #include <linux/io.h>
 #include <linux/irqchip/arm-gic-v3.h>
 #include <linux/module.h>
@@ -407,6 +408,9 @@ imx_scu_add_pm_domain(struct device *dev, int idx,
 	struct genpd_power_state *states;
 	bool is_off = true;
 	int ret;
+
+	if (!imx_sc_rm_is_resource_owned(pm_ipc_handle, pd_ranges->rsrc + idx))
+		return NULL;
 
 	sc_pd = devm_kzalloc(dev, sizeof(*sc_pd), GFP_KERNEL);
 	if (!sc_pd)
