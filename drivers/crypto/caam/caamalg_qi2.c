@@ -2369,7 +2369,7 @@ static struct caam_aead_alg driver_aeads[] = {
 				.cra_name = "echainiv(authenc(hmac(sha256),"
 					    "cbc(aes)))",
 				.cra_driver_name = "echainiv-authenc-"
-						   "hmac-sha256-cbc-aes-"
+						   "hmac-sha256-cbc-des-"
 						   "caam-qi2",
 				.cra_blocksize = AES_BLOCK_SIZE,
 			},
