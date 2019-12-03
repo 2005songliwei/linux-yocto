@@ -146,6 +146,7 @@ enum pm_ioctl_id {
 	IOCTL_SD_DLL_RESET = 6,
 	IOCTL_SET_SD_TAPDELAY,
 	IOCTL_GET_RPU_OPER_MODE,
+	IOCTL_SET_SGMII_MODE,
 	IOCTL_SET_PLL_FRAC_MODE,
 	IOCTL_GET_PLL_FRAC_MODE,
 	IOCTL_SET_PLL_FRAC_DATA,
@@ -389,6 +390,11 @@ enum pm_pinctrl_drive_strength {
 enum pm_pinctrl_tri_state {
 	PM_PINCTRL_TRI_STATE_DISABLE = 0,
 	PM_PINCTRL_TRI_STATE_ENABLE,
+};
+
+enum sgmii_mode {
+	PM_SGMII_DISABLE,
+	PM_SGMII_ENABLE,
 };
 
 enum pm_register_access_id {
