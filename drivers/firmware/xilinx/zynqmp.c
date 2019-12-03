@@ -520,6 +520,10 @@ static inline int zynqmp_is_valid_ioctl(u32 ioctl_id)
 	case IOCTL_GET_PLL_FRAC_MODE:
 	case IOCTL_SET_PLL_FRAC_DATA:
 	case IOCTL_GET_PLL_FRAC_DATA:
+	case IOCTL_WRITE_GGS:
+	case IOCTL_READ_GGS:
+	case IOCTL_WRITE_PGGS:
+	case IOCTL_READ_PGGS:
 		return 1;
 	default:
 		return 0;
@@ -1132,8 +1136,16 @@ static int zynqmp_pm_sysfs_init(void)
 	if (ret) {
 		pr_err("%s() sysfs creation fail with error %d\n",
 		       __func__, ret);
+		goto err;
 	}
 
+	ret = zynqmp_pm_ggs_init(zynqmp_kobj);
+	if (ret) {
+		pr_err("%s() GGS init fail with error %d\n",
+		       __func__, ret);
+		goto err;
+	}
+err:
 	return ret;
 }
 
