@@ -16,6 +16,7 @@
 
 #include <linux/clocksource.h>
 #include <linux/net_tstamp.h>
+#include <linux/pm_qos.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/timecounter.h>
 
@@ -478,6 +479,8 @@ struct bufdesc_ex {
  * clocks to generate 2ns delay.
  */
 #define FEC_QUIRK_DELAYED_CLKS_SUPPORT	(1 << 18)
+/* request pmqos during low power */
+#define FEC_QUIRK_HAS_PMQOS		(1 << 19)
 
 struct fec_enet_stop_mode {
 	struct regmap *gpr;
@@ -602,6 +605,7 @@ struct fec_enet_private {
 	int hwts_tx_en;
 	struct delayed_work time_keep;
 	struct regulator *reg_phy;
+	struct pm_qos_request pm_qos_req;
 	struct fec_stop_mode_gpr stop_gpr;
 
 	unsigned int tx_align;
