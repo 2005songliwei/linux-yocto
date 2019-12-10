@@ -1410,7 +1410,7 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 		ist_end_non_atomic();
 	} else {
 		if (!fixup_exception(regs, X86_TRAP_MC, error_code, 0))
-			mce_panic("Failed kernel mode recovery", &m, NULL);
+			mce_panic("Failed kernel mode recovery", &m, msg);
 	}
 
 out_ist:
