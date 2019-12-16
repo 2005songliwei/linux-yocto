@@ -90,6 +90,58 @@ static struct fb_ops xlnx_fbdev_ops = {
 	.fb_ioctl	= xlnx_fb_ioctl,
 };
 
+static struct drm_framebuffer *
+xlnx_fb_gem_fb_alloc(struct drm_device *drm,
+		     const struct drm_mode_fb_cmd2 *mode_cmd,
+		     struct drm_gem_object **obj, unsigned int num_planes,
+		     const struct drm_framebuffer_funcs *funcs)
+{
+	struct drm_framebuffer *fb;
+	int ret, i;
+
+	fb = kzalloc(sizeof(*fb), GFP_KERNEL);
+	if (!fb)
+		return ERR_PTR(-ENOMEM);
+
+	drm_helper_mode_fill_fb_struct(drm, fb, mode_cmd);
+
+	for (i = 0; i < num_planes; i++)
+		fb->obj[i] = obj[i];
+
+	ret = drm_framebuffer_init(drm, fb, funcs);
+	if (ret) {
+		dev_err(drm->dev, "Failed to init framebuffer: %d\n", ret);
+		kfree(fb);
+		return ERR_PTR(ret);
+	}
+
+	return fb;
+}
+
+static struct drm_framebuffer *
+xlnx_fb_gem_fbdev_fb_create(struct drm_device *drm,
+			struct drm_fb_helper_surface_size *size,
+			unsigned int pitch_align, struct drm_gem_object *obj,
+			const struct drm_framebuffer_funcs *funcs)
+{
+	struct drm_mode_fb_cmd2 mode_cmd = { 0 };
+
+	mode_cmd.width = size->surface_width;
+	mode_cmd.height = size->surface_height;
+	mode_cmd.pitches[0] = size->surface_width *
+			      DIV_ROUND_UP(size->surface_bpp, 8);
+	if (pitch_align)
+		mode_cmd.pitches[0] = roundup(mode_cmd.pitches[0],
+					      pitch_align);
+	mode_cmd.pixel_format = drm_driver_legacy_fb_format(drm,
+							    size->surface_bpp,
+							    size->surface_depth);
+	if (obj->size < mode_cmd.pitches[0] * mode_cmd.height)
+		return ERR_PTR(-EINVAL);
+
+	return xlnx_fb_gem_fb_alloc(drm, &mode_cmd, &obj, 1, funcs);
+}
+
 /**
  * xlnx_fbdev_create - Create the fbdev with a framebuffer
  * @fb_helper: fb helper structure
@@ -131,8 +183,8 @@ static int xlnx_fbdev_create(struct drm_fb_helper *fb_helper,
 		goto err_drm_gem_cma_free_object;
 	}
 
-	fbdev->fb = drm_gem_fbdev_fb_create(drm, size, fbdev->align, &obj->base,
-					    &xlnx_fb_funcs);
+	fbdev->fb = xlnx_fb_gem_fbdev_fb_create(drm, size, fbdev->align,
+						&obj->base, &xlnx_fb_funcs);
 	if (IS_ERR(fbdev->fb)) {
 		dev_err(drm->dev, "Failed to allocate DRM framebuffer.\n");
 		ret = PTR_ERR(fbdev->fb);
