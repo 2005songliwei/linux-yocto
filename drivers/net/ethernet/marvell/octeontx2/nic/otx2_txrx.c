@@ -157,7 +157,7 @@ static void otx2_skb_add_frag(struct otx2_nic *pfvf, struct sk_buff *skb,
 		 */
 		if (parse->laptr) {
 			otx2_set_rxtstamp(pfvf, skb, va);
-			off = 8;
+			off = OTX2_HW_TIMESTAMP_LEN;
 		}
 		off += pfvf->xtra_hdr;
 	}
