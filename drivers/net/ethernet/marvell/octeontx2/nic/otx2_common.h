@@ -319,6 +319,7 @@ struct otx2_nic {
 	 */
 #define OTX2_EDSA_HDR_LEN			16
 #define OTX2_HIGIG2_HDR_LEN			16
+#define OTX2_HW_TIMESTAMP_LEN			8
 	u32			addl_mtu;
 };
 

@@ -1320,7 +1320,9 @@ static int otx2_init_hw_resources(struct otx2_nic *pf)
 	hw->pool_cnt = hw->rqpool_cnt + hw->sqpool_cnt;
 
 	/* Get the size of receive buffers to allocate */
-	pf->rbsize = RCV_FRAG_LEN(pf->netdev->mtu + OTX2_ETH_HLEN);
+	pf->rbsize = RCV_FRAG_LEN(pf->netdev->mtu + OTX2_ETH_HLEN +
+				  OTX2_HW_TIMESTAMP_LEN + pf->addl_mtu +
+				  pf->xtra_hdr);
 
 	otx2_mbox_lock(mbox);
 	/* NPA init */
