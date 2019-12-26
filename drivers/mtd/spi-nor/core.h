@@ -314,6 +314,7 @@ struct flash_info {
 #define	SST_GLOBAL_PROT_UNLK	BIT(16)	/* Unlock the Global protection for
 					 * sst flashes
 					 */
+#define SPI_NOR_OCTAL_WRITE	BIT(17) /* Flash supports Octal Write */
 
 	int	(*quad_enable)(struct spi_nor *nor);
 	/* Part specific fixup hooks. */
