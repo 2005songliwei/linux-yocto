@@ -2202,6 +2202,7 @@ static const struct flash_info *spi_nor_read_id(struct spi_nor *nor)
 	u8 *id = nor->bouncebuf;
 	unsigned int i;
 	int ret;
+	int tmp;
 
 	if (nor->spimem) {
 		struct spi_mem_op op =
@@ -2219,6 +2220,9 @@ static const struct flash_info *spi_nor_read_id(struct spi_nor *nor)
 		dev_dbg(nor->dev, "error %d reading JEDEC ID\n", ret);
 		return ERR_PTR(ret);
 	}
+
+	for (tmp = 0; tmp < SPI_NOR_MAX_ID_LEN; tmp++)
+		nor->device_id[tmp] = id[tmp];
 
 	for (i = 0; i < ARRAY_SIZE(manufacturers); i++) {
 		info = spi_nor_search_part_by_id(manufacturers[i]->parts,
@@ -2500,6 +2504,28 @@ static int spi_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 write_err:
 	spi_nor_unlock_and_unprep(nor);
 	return ret;
+}
+
+static int spi_nor_switch_micron_octal_ddr(struct spi_nor *nor)
+{
+	u8 cr = SPINOR_VCR_OCTAL_DDR;
+	int ret;
+	u8 program_opcode;
+
+	program_opcode = nor->program_opcode;
+	spi_nor_write_enable(nor);
+	nor->program_opcode = SPINOR_OP_WRCR;
+	nor->addr_width = 3;
+	ret = nor->write(nor, 0x0, 1, &cr);
+	nor->program_opcode = program_opcode;
+	nor->addr_width = 4;
+	if (ret < 0) {
+		dev_err(nor->dev,
+			"error while writing configuration register\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int spi_nor_check(struct spi_nor *nor)
@@ -2954,6 +2980,12 @@ static int spi_nor_default_setup(struct spi_nor *nor,
 		 * Yet another reason to switch to spi-mem.
 		 */
 		ignored_mask = SNOR_HWCAPS_X_X_X;
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			if (hwcaps->mask & SNOR_HWCAPS_READ_8_8_8)
+				ignored_mask &= ~SNOR_HWCAPS_READ_8_8_8;
+			if (hwcaps->mask & SNOR_HWCAPS_PP_8_8_8)
+				ignored_mask &= ~SNOR_HWCAPS_PP_8_8_8;
+		}
 		if (shared_mask & ignored_mask) {
 			dev_dbg(nor->dev,
 				"SPI n-n-n protocols are not supported.\n");
@@ -3097,6 +3129,13 @@ static void spi_nor_info_init_params(struct spi_nor *nor)
 		spi_nor_set_read_settings(&params->reads[SNOR_CMD_READ_1_1_8],
 					  0, 8, SPINOR_OP_READ_1_1_8,
 					  SNOR_PROTO_1_1_8);
+
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			params->hwcaps.mask |= SNOR_HWCAPS_READ_8_8_8;
+			spi_nor_set_read_settings(&params->reads[SNOR_CMD_READ_8_8_8],
+						  0, 16, SPINOR_OP_READ_1_1_8,
+						  SNOR_PROTO_8_8_8);
+		}
 	}
 
 	/* Page Program settings. */
@@ -3108,6 +3147,12 @@ static void spi_nor_info_init_params(struct spi_nor *nor)
 		params->hwcaps.mask |= SNOR_HWCAPS_PP_1_1_8;
 		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_1_1_8],
 					SPINOR_OP_PP_1_1_8, SNOR_PROTO_1_1_8);
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			params->hwcaps.mask |= SNOR_HWCAPS_PP_8_8_8;
+			spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_8_8_8],
+						SPINOR_OP_PP_1_1_8,
+						SNOR_PROTO_8_8_8);
+		}
 	}
 
 	/*
@@ -3521,6 +3566,9 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (info->flags & SPI_NOR_HAS_LOCK)
 		nor->flags |= SNOR_F_HAS_LOCK;
 
+	if ((u16)nor->jedec_id != CFI_MFR_MICRON)
+		nor->flags |= SNOR_F_BROKEN_OCTAL_DDR;
+
 	mtd->_write = spi_nor_write;
 
 	/* Init flash parameters based on flash_info struct and SFDP */
@@ -3672,6 +3720,14 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 		".erasesize = 0x%.8x (%uKiB) .numeraseregions = %d\n",
 		mtd->name, (long long)mtd->size, (long long)(mtd->size >> 20),
 		mtd->erasesize, mtd->erasesize / 1024, mtd->numeraseregions);
+
+	if (hwcaps->mask & (SNOR_HWCAPS_READ_8_8_8 | SNOR_HWCAPS_PP_8_8_8)) {
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			ret = spi_nor_switch_micron_octal_ddr(nor);
+			if (ret)
+				return ret;
+		}
+	}
 
 	if (mtd->numeraseregions)
 		for (i = 0; i < mtd->numeraseregions; i++)

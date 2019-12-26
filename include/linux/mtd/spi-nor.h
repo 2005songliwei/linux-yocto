@@ -50,6 +50,9 @@
 #define SPINOR_OP_CLFSR		0x50	/* Clear flag status register */
 #define SPINOR_OP_RDEAR		0xc8	/* Read Extended Address Register */
 #define SPINOR_OP_WREAR		0xc5	/* Write Extended Address Register */
+#define SPINOR_OP_WRCR		0x81	/* Write Configuration register */
+
+#define SPI_NOR_MAX_ID_LEN 6
 
 /* 4-byte address opcodes - used on Spansion and some Macronix flashes. */
 #define SPINOR_OP_READ_4B	0x13	/* Read data bytes (low frequency) */
@@ -105,6 +108,9 @@
 /* Used for Micron flashes only. */
 #define SPINOR_OP_RD_EVCR      0x65    /* Read EVCR register */
 #define SPINOR_OP_WD_EVCR      0x61    /* Write EVCR register */
+
+/* For Micron flashes only */
+#define SPINOR_VCR_OCTAL_DDR	0xE7	/* VCR BYTE0 value for Octal DDR mode */
 
 /* Status Register bits. */
 #define SR_WIP			BIT(0)	/* Write in progress */
@@ -403,6 +409,7 @@ struct spi_nor {
 	bool			isparallel;
 	bool                    isstacked;
 	bool			is_lock;
+	u8			device_id[SPI_NOR_MAX_ID_LEN];
 
 	const struct spi_nor_controller_ops *controller_ops;
 
