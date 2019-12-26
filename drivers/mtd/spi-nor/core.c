@@ -764,6 +764,7 @@ int spi_nor_wait_till_ready(struct spi_nor *nor)
 	return spi_nor_wait_till_ready_with_timeout(nor,
 						    DEFAULT_READY_WAIT_JIFFIES);
 }
+EXPORT_SYMBOL_GPL(spi_nor_wait_till_ready);
 
 /**
  * spi_nor_write_sr() - Write the Status Register.
