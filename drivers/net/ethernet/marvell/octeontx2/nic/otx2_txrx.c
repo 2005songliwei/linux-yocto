@@ -328,6 +328,7 @@ static int otx2_rx_napi_handler(struct otx2_nic *pfvf,
 
 		cqe->hdr.cqe_type = NIX_XQE_TYPE_INVALID;
 		cqe->sg.seg_addr = 0x00;
+		cqe->sg.subdc = NIX_SUBDC_NOP;
 		processed_cqe++;
 	}
 

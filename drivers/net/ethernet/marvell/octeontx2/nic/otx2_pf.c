@@ -2439,7 +2439,7 @@ static int otx2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 				NETIF_F_HW_VLAN_CTAG_RX |
 				NETIF_F_HW_VLAN_STAG_RX;
 
-	netdev->features |= netdev->hw_features | NETIF_F_LLTX;
+	netdev->features |= netdev->hw_features;
 
 	netdev->hw_features |= NETIF_F_LOOPBACK | NETIF_F_RXALL | NETIF_F_NTUPLE;
 	netdev->priv_flags |= IFF_UNICAST_FLT;
