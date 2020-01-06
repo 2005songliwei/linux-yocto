@@ -5037,7 +5037,7 @@ static int spi_nor_select_erase(struct spi_nor *nor)
 		if (!erase)
 			return -EINVAL;
 		nor->erase_opcode = erase->opcode;
-		mtd->erasesize = erase->size;
+		mtd->erasesize = erase->size << nor->shift;
 		return 0;
 	}
 
@@ -5055,7 +5055,7 @@ static int spi_nor_select_erase(struct spi_nor *nor)
 	if (!erase)
 		return -EINVAL;
 
-	mtd->erasesize = erase->size;
+	mtd->erasesize = erase->size << nor->shift;
 	return 0;
 }
 
