@@ -965,7 +965,7 @@ struct cdns3_usb_regs {
 /*
  * USBSS-DEV DMA interface.
  */
-#define TRBS_PER_SEGMENT	150
+#define TRBS_PER_SEGMENT	600
 
 #define ISO_MAX_INTERVAL	10
 
