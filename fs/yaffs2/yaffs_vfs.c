@@ -173,6 +173,8 @@ static uint32_t YCALCBLOCKS(uint64_t partition_size, uint32_t block_size)
 #include <linux/uaccess.h>
 #include <linux/mtd/mtd.h>
 
+#include <uapi/linux/mount.h>
+
 #include "yportenv.h"
 #include "yaffs_trace.h"
 #include "yaffs_guts.h"
@@ -266,7 +268,7 @@ MODULE_PARM(yaffs_gc_control, "i");
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0))
 #define update_dir_time(dir) do {\
-		(dir)->i_ctime = (dir)->i_mtime = CURRENT_TIME; \
+		(dir)->i_ctime = (dir)->i_mtime = current_time(dir); \
 	} while (0)
 #elif (LINUX_VERSION_CODE < KERNEL_VERSION(4,18,0))
 #define update_dir_time(dir) do {\
@@ -274,7 +276,7 @@ MODULE_PARM(yaffs_gc_control, "i");
 	} while (0)
 #else
 #define update_dir_time(dir) do {\
-		(dir)->i_ctime = (dir)->i_mtime = current_kernel_time64(); \
+		(dir)->i_ctime = (dir)->i_mtime = current_time(dir); \
 	} while (0)
 #endif
 
@@ -967,6 +969,12 @@ static int yaffs_setxattr(struct dentry *dentry, const char *name,
 	struct yaffs_obj *obj = yaffs_inode_to_obj(inode);
 
 	yaffs_trace(YAFFS_TRACE_OS, "yaffs_setxattr of object %d", obj->obj_id);
+
+	/* Currently we don't support posix ACL so never accept any settings
+	 * start with "system.posix_acl_".
+	 */
+	if (strncmp(name, "system.posix_acl_", 17))
+		error = -EOPNOTSUPP;
 
 	if (error == 0) {
 		int result;
@@ -1661,7 +1669,7 @@ static int yaffs_unlink(struct inode *dir, struct dentry *dentry)
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0))
 		inode_inc_iversion(dir);
 #else
-		dir->i_version++;
+		atomic64_inc(&dir->i_version);
 #endif
 		yaffs_gross_unlock(dev);
 		update_dir_time(dir);
@@ -1818,6 +1826,7 @@ static int yaffs_iterate(struct file *f, struct dir_context *dc)
 	int ret_val = 0;
 
 	char name[YAFFS_MAX_NAME_LENGTH + 1];
+	u64 i_version;
 
 	obj = yaffs_dentry_to_obj(Y_GET_DENTRY(f));
 	dev = obj->my_dev;
@@ -1943,10 +1952,11 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 
 	/* If the directory has changed since the open or last call to
 	   readdir, rewind to after the 2 canned entries. */
-	if (f->f_version != inode->i_version) {
+	i_version = atomic64_read(&inode->i_version);
+	if (f->f_version != i_version) {
 		offset = 2;
 		f->f_pos = offset;
-		f->f_version = inode->i_version;
+		f->f_version = i_version;
 	}
 
 	while (sc->next_return) {
@@ -2371,6 +2381,9 @@ static void yaffs_put_super(struct super_block *sb)
 		kfree(yaffs_dev_to_lc(dev)->spare_buffer);
 		yaffs_dev_to_lc(dev)->spare_buffer = NULL;
 	}
+
+	if (dev->os_context)
+		kfree(dev->os_context);
 
 	kfree(dev);
 
@@ -2947,12 +2960,9 @@ static struct super_block *yaffs_internal_read_super(int yaffs_version,
 		MAJOR(sb->s_dev), MINOR(sb->s_dev),
 		yaffs_devname(sb, devname_buf));
 
-	/* Get the device */
-	mtd = get_mtd_device(NULL, MINOR(sb->s_dev));
+
+	mtd = yaffs_get_mtd_device(sb->s_dev);
 	if (IS_ERR(mtd)) {
-		yaffs_trace(YAFFS_TRACE_ALWAYS,
-			"yaffs: MTD device %u either not valid or unavailable",
-			MINOR(sb->s_dev));
 		return NULL;
 	}
 
@@ -2961,16 +2971,16 @@ static struct super_block *yaffs_internal_read_super(int yaffs_version,
 		yaffs_version = 2;
 	}
 
+	if (mtd->oobavail < sizeof(struct yaffs_packed_tags2) ||
+	    options.inband_tags)
+		inband_tags = 1;
+
 	/* Added NCB 26/5/2006 for completeness */
-	if (yaffs_version == 2 && !options.inband_tags
+	if (yaffs_version == 2 && !inband_tags
 	    && WRITE_SIZE(mtd) == 512) {
 		yaffs_trace(YAFFS_TRACE_ALWAYS, "auto selecting yaffs1");
 		yaffs_version = 1;
 	}
-
-	if (mtd->oobavail < sizeof(struct yaffs_packed_tags2) ||
-	    options.inband_tags)
-		inband_tags = 1;
 
 	if(yaffs_verify_mtd(mtd, yaffs_version, inband_tags) < 0)
 		return NULL;
