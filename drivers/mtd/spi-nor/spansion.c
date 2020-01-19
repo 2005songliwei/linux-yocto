@@ -18,10 +18,10 @@ static const struct flash_info spansion_parts[] = {
 			     SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 	{ "s25fl128s0", INFO6(0x012018, 0x4d0080, 256 * 1024, 64,
 			      SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-			      USE_CLSR) },
+			      USE_CLSR | SPI_NOR_HAS_LOCK) },
 	{ "s25fl128s1", INFO6(0x012018, 0x4d0180, 64 * 1024, 256,
 			      SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-			      USE_CLSR) },
+			      USE_CLSR | SPI_NOR_HAS_LOCK) },
 	{ "s25fl256s0", INFO(0x010219, 0x4d00, 256 * 1024, 128, USE_CLSR) },
 	{ "s25fl256s1", INFO(0x010219, 0x4d01,  64 * 1024, 512,
 			     SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
@@ -70,6 +70,8 @@ static const struct flash_info spansion_parts[] = {
 	{ "s25fl256l",  INFO(0x016019,      0,  64 * 1024, 512,
 			     SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
 			     SPI_NOR_4B_OPCODES) },
+	{ "sst26wf016B", INFO(0xbf2651, 0, 64 * 1024, 32,
+			SECT_4K | SST_GLOBAL_PROT_UNLK) },
 };
 
 static void spansion_post_sfdp_fixups(struct spi_nor *nor)
