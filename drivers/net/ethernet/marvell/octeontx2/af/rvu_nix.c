@@ -1459,8 +1459,9 @@ int rvu_mbox_handler_nix_txsch_alloc(struct rvu *rvu,
 
 	mutex_lock(&rvu->rsrc_lock);
 
-	/* Check if full request can be accommodated */
-	if (rvu_check_txsch_policy(rvu, req, pcifunc)) {
+	/* Check if request can be accommodated as per limits set by admin */
+	if (!hw->cap.nix_fixed_txschq_mapping &&
+	    rvu_check_txsch_policy(rvu, req, pcifunc)) {
 		dev_err(rvu->dev, "Func 0x%x: TXSCH policy check failed\n",
 			pcifunc);
 		goto err;
