@@ -532,8 +532,8 @@ struct coresight_device *coresight_get_enabled_sink(struct coresight_device *s,
 	/* If the connected port is an ETR with single trace source,
 	 * nothing to search further.
 	 */
-	child = s->conns[0].child_dev;
-	if (s->nr_outport == 1 &&
+	child = s->pdata->conns[0].child_dev;
+	if (s->pdata->nr_outport == 1 &&
 	    child->type == CORESIGHT_DEV_TYPE_SINK &&
 	    child->subtype.sink_subtype == CORESIGHT_DEV_SUBTYPE_SINK_BUFFER &&
 	    child->pdata->nr_inport == 1 &&
