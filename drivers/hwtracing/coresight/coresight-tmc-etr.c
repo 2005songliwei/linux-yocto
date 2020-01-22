@@ -1454,6 +1454,9 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 		drvdata->sysfs_buf = new_buf;
 	}
 
+	if (drvdata->mode == CS_MODE_READ_PREVBOOT)
+		goto out;
+
 	ret = tmc_etr_enable_hw(drvdata, drvdata->sysfs_buf);
 	if (!ret) {
 		drvdata->mode = CS_MODE_SYSFS;
@@ -1462,8 +1465,8 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
-
-	if (!ret && !is_etm_sync_mode_hw())
+	if (!ret && !is_etm_sync_mode_hw() &&
+		(drvdata->mode != CS_MODE_READ_PREVBOOT))
 		smp_call_function_single(drvdata->rc_cpu, tmc_etr_timer_setup,
 					 drvdata, true);
 	/* Free memory outside the spinlock if need be */
@@ -2006,6 +2009,14 @@ int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 	/* config types are set a boot time and never change */
 	if (WARN_ON_ONCE(drvdata->config_type != TMC_CONFIG_TYPE_ETR))
 		return -EINVAL;
+
+	if (drvdata->mode == CS_MODE_READ_PREVBOOT) {
+		/* Initialize drvdata for reading trace data from last boot */
+		tmc_enable_etr_sink_sysfs(drvdata->csdev);
+		/* Update the buffer offset, len */
+		tmc_etr_sync_sysfs_buf(drvdata);
+		return 0;
+	}
 
 	if (drvdata->etr_options & CSETR_QUIRK_NO_STOP_FLUSH)
 		smp_call_function_single(drvdata->rc_cpu, tmc_flushstop_etm_off,
