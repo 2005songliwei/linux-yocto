@@ -356,6 +356,7 @@ struct etmv4_save_state {
  * @csdev:      Component vitals needed by the framework.
  * @spinlock:   Only one at a time pls.
  * @mode:	This tracer's mode, i.e sysFS, Perf or disabled.
+ * @etm_options: Bitmask of options to manage ETMv4 Silicon issues
  * @cpu:        The cpu this component is affined to.
  * @arch:       ETM version number.
  * @nr_pe:	The number of processing entity available for tracing.
@@ -413,6 +414,7 @@ struct etmv4_drvdata {
 	struct coresight_device		*csdev;
 	spinlock_t			spinlock;
 	local_t				mode;
+	u32				etm_options;
 	int				cpu;
 	u8				arch;
 	u8				nr_pe;
