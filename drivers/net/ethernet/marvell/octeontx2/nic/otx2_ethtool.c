@@ -383,20 +383,21 @@ static int otx2_set_pauseparam(struct net_device *netdev,
 			       struct ethtool_pauseparam *pause)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
-	struct cgx_pause_frm_cfg *req;
 
 	if (pause->autoneg)
 		return -EOPNOTSUPP;
 
-	req = otx2_mbox_alloc_msg_cgx_cfg_pause_frm(&pfvf->mbox);
-	if (!req)
-		return -EAGAIN;
+	if (pause->rx_pause)
+		pfvf->flags |= OTX2_FLAG_RX_PAUSE_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_RX_PAUSE_ENABLED;
 
-	req->set = 1;
-	req->rx_pause = pause->rx_pause;
-	req->tx_pause = pause->tx_pause;
+	if (pause->tx_pause)
+		pfvf->flags |= OTX2_FLAG_TX_PAUSE_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_TX_PAUSE_ENABLED;
 
-	return otx2_sync_mbox_msg(&pfvf->mbox);
+	return otx2_config_pause_frm(pfvf);
 }
 
 static void otx2_get_ringparam(struct net_device *netdev,
