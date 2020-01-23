@@ -1636,6 +1636,9 @@ int otx2_open(struct net_device *netdev)
 		otx2_config_hw_rx_tstamp(pf, true);
 	}
 
+	/* Restore pause frame settings */
+	otx2_config_pause_frm(pf);
+
 	/* Set NPC parsing mode, skip LBKs */
 	if (!is_otx2_lbkvf(pf->pdev)) {
 		otx2_set_npc_parse_mode(pf, false);
