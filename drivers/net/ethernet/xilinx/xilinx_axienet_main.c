@@ -689,9 +689,16 @@ static int axienet_free_tx_chain(struct net_device *ndev, u32 first_bd,
 		if (cur_p->ptp_tx_skb)
 			axienet_tx_hwtstamp(lp, cur_p);
 #endif
-		dma_unmap_single(ndev->dev.parent, cur_p->phys,
-				(cur_p->cntrl & XAXIDMA_BD_CTRL_LENGTH_MASK),
-				DMA_TO_DEVICE);
+		if (cur_p->tx_desc_mapping == DESC_DMA_MAP_PAGE)
+			dma_unmap_page(ndev->dev.parent, cur_p->phys,
+				       cur_p->cntrl &
+				       XAXIDMA_BD_CTRL_LENGTH_MASK,
+				       DMA_TO_DEVICE);
+		else
+			dma_unmap_single(ndev->dev.parent, cur_p->phys,
+					 cur_p->cntrl &
+					 XAXIDMA_BD_CTRL_LENGTH_MASK,
+					 DMA_TO_DEVICE);
 
 		if (cur_p->skb && (status & XAXIDMA_BD_STS_COMPLETE_MASK))
 			dev_kfree_skb_irq((struct sk_buff *)cur_p->tx_skb);
@@ -955,7 +962,6 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	u32 num_frag;
 	u32 csum_start_off;
 	u32 csum_index_off;
-	skb_frag_t *frag;
 	dma_addr_t tail_p;
 	struct axienet_local *lp = netdev_priv(ndev);
 	struct axidma_bd *cur_p;
@@ -1090,27 +1096,21 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		return NETDEV_TX_OK;
 	}
 	cur_p->cntrl = (skb_headlen(skb) | XAXIDMA_BD_CTRL_TXSOF_MASK) + pad;
+	cur_p->tx_desc_mapping = DESC_DMA_MAP_SINGLE;
 
 	for (ii = 0; ii < num_frag; ii++) {
+		u32 len;
+		skb_frag_t *frag;
+
 		if (++lp->tx_bd_tail >= lp->tx_bd_num)
 			lp->tx_bd_tail = 0;
 		cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
 		frag = &skb_shinfo(skb)->frags[ii];
-		cur_p->phys = dma_map_single(ndev->dev.parent,
-					     skb_frag_address(frag),
-					     skb_frag_size(frag),
-					     DMA_TO_DEVICE);
-		if (unlikely(dma_mapping_error(ndev->dev.parent, cur_p->phys))) {
-			if (net_ratelimit())
-				netdev_err(ndev, "TX DMA mapping error\n");
-			ndev->stats.tx_dropped++;
-			axienet_free_tx_chain(ndev, orig_tail_ptr, ii + 1,
-					      NULL);
-			lp->tx_bd_tail = orig_tail_ptr;
-
-			return NETDEV_TX_OK;
-		}
-		cur_p->cntrl = skb_frag_size(frag) + pad;
+		len = skb_frag_size(frag);
+		cur_p->phys = skb_frag_dma_map(ndev->dev.parent, frag, 0, len,
+					       DMA_TO_DEVICE);
+		cur_p->cntrl = len + pad;
+		cur_p->tx_desc_mapping = DESC_DMA_MAP_PAGE;
 	}
 
 	cur_p->cntrl |= XAXIDMA_BD_CTRL_TXEOF_MASK;
