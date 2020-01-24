@@ -252,6 +252,11 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 		if (!skb)
 			goto out;
 
+		/* Ensure that the skb is completely updated
+		 * prio to mapping the DMA
+		 */
+		wmb();
+
 		lp->rx_bd_v[i].skb = skb;
 		lp->rx_bd_v[i].phys = dma_map_single(ndev->dev.parent,
 						     skb->data,
@@ -765,6 +770,9 @@ axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	cur_p->skb = skb;
 
 	tail_p = lp->tx_bd_p + sizeof(*lp->tx_bd_v) * lp->tx_bd_tail;
+	/* Ensure BD write before starting transfer */
+	wmb();
+
 	/* Start the transfer */
 	axienet_dma_out_addr(lp, XAXIDMA_TX_TDESC_OFFSET, tail_p);
 	if (++lp->tx_bd_tail >= lp->tx_bd_num)
@@ -796,6 +804,8 @@ static int axienet_recv(struct net_device *ndev, int budget)
 	struct axidma_bd *cur_p;
 	unsigned int numbdfree = 0;
 
+	/* Get relevat BD status value */
+	rmb();
 	cur_p = &lp->rx_bd_v[lp->rx_bd_ci];
 
 	while ((numbdfree < budget) &&
@@ -841,6 +851,11 @@ static int axienet_recv(struct net_device *ndev, int budget)
 			break;
 		}
 
+		/* Ensure that the skb is completely updated
+		 * prio to mapping the DMA
+		 */
+		wmb();
+
 		cur_p->phys = dma_map_single(ndev->dev.parent, new_skb->data,
 					     lp->max_frm_size,
 					     DMA_FROM_DEVICE);
@@ -857,6 +872,9 @@ static int axienet_recv(struct net_device *ndev, int budget)
 
 		if (++lp->rx_bd_ci >= lp->rx_bd_num)
 			lp->rx_bd_ci = 0;
+
+		/* Get relevat BD status value */
+		rmb();
 		cur_p = &lp->rx_bd_v[lp->rx_bd_ci];
 		numbdfree++;
 	}
