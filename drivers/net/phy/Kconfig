@@ -464,7 +464,8 @@ config MICROSEMI_PHY
 	select CRYPTO_AES
 	select CRYPTO_ECB
 	---help---
-	  Currently supports VSC8514, VSC8530, VSC8531, VSC8540 and VSC8541 PHYs
+	  Currently supports VSC8514, VSC8530, VSC8531, VSC8531_02, VSC8540 and
+	  VSC8541 PHYs
 
 config NATIONAL_PHY
 	tristate "National Semiconductor PHYs"
