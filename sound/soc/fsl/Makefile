@@ -50,6 +50,7 @@ obj-$(CONFIG_SND_SOC_FSL_HDMI) += snd-soc-fsl-hdmi.o
 obj-$(CONFIG_SND_SOC_POWERPC_DMA) += snd-soc-fsl-dma.o
 obj-$(CONFIG_SND_SOC_FSL_RPMSG_I2S) += snd-soc-fsl-rpmsg-i2s.o
 obj-$(CONFIG_SND_SOC_FSL_AUD2HTX) += snd-soc-fsl-aud2htx.o
+obj-$(CONFIG_SND_SOC_FSL_XCVR) += snd-soc-fsl-xcvr.o
 obj-$(CONFIG_SND_SOC_FSL_ASOC_CARD) += snd-soc-fsl-asoc-card.o
 snd-soc-fsl-hdmi-objs := fsl_hdmi.o
 obj-$(CONFIG_SND_SOC_FSL_EASRC) += snd-soc-fsl-easrc.o
