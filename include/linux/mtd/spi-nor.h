@@ -411,6 +411,7 @@ struct spi_nor {
 	u8			device_id[SPI_NOR_MAX_ID_LEN];
 	bool			is_addrvalid;
 	loff_t			reg_addr;
+	struct delayed_work	complete_work;
 
 	const struct spi_nor_controller_ops *controller_ops;
 
