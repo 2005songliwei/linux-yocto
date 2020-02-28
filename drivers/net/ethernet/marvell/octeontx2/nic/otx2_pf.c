@@ -631,6 +631,7 @@ static int otx2_init_hw_resources(struct otx2_nic *pf)
 	struct otx2_hw *hw = &pf->hw;
 	struct msg_req *req;
 	int err = 0, lvl;
+	struct nix_lf_free_req *free_req;
 
 	/* Set required NPA LF's pool counts
 	 * Auras and Pools are used in a 1:1 mapping,
@@ -704,8 +705,8 @@ err_free_rq_ptrs:
 	otx2_aura_pool_free(pf);
 err_free_nix_lf:
 	otx2_mbox_lock(mbox);
-	req = otx2_mbox_alloc_msg_nix_lf_free(mbox);
-	if (req) {
+	free_req = otx2_mbox_alloc_msg_nix_lf_free(mbox);
+	if (free_req) {
 		if (otx2_sync_mbox_msg(mbox))
 			dev_err(pf->dev, "%s failed to free nixlf\n", __func__);
 	}
@@ -758,8 +759,8 @@ static void otx2_free_hw_resources(struct otx2_nic *pf)
 
 	otx2_mbox_lock(mbox);
 	/* Reset NIX LF */
-	req = otx2_mbox_alloc_msg_nix_lf_free(mbox);
-	if (req) {
+	free_req = otx2_mbox_alloc_msg_nix_lf_free(mbox);
+	if (free_req) {
 		if (otx2_sync_mbox_msg(mbox))
 			dev_err(pf->dev, "%s failed to free nixlf\n", __func__);
 	}
