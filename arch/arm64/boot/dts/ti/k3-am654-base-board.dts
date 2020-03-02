@@ -292,6 +292,28 @@
 	};
 };
 
+&ospi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mcu_fss0_ospi0_pins_default>;
+
+	flash@0{
+		compatible = "jedec,spi-nor";
+		reg = <0x0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <8>;
+		spi-max-frequency = <50000000>;
+		spi-dqs;
+		cdns,tshsl-ns = <60>;
+		cdns,tsd2d-ns = <60>;
+		cdns,tchsh-ns = <60>;
+		cdns,tslch-ns = <60>;
+		cdns,read-delay = <2>;
+		cdns,phy-mode;
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+};
+
 &serdes0 {
 	status = "disabled";
 };
