@@ -1793,6 +1793,10 @@ static int of_spi_parse_dt(struct spi_controller *ctlr, struct spi_device *spi,
 	}
 	spi->max_speed_hz = value;
 
+	/* Multi die flash */
+	if (of_property_read_bool(nc, "multi-die"))
+		spi->multi_die = true;
+
 	return 0;
 }
 
@@ -3165,6 +3169,14 @@ static int __spi_validate(struct spi_device *spi, struct spi_message *message)
 			xfer->cs_change = 1;
 		}
 	}
+
+	/*
+	 *  Data stripe option is selected if and only if when
+	 *  two chips are enabled
+	 */
+	if ((ctlr->flags & SPI_MASTER_DATA_STRIPE)
+			&& !(ctlr->flags & SPI_MASTER_BOTH_CS))
+			return -EINVAL;
 
 	/* Half-duplex links include original MicroWire, and ones with
 	 * only one data pin like SPI_3WIRE (switches direction) or where

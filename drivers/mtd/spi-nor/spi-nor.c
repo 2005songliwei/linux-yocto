@@ -22,6 +22,7 @@
 #include <linux/sched/task_stack.h>
 #include <linux/spi/flash.h>
 #include <linux/mtd/spi-nor.h>
+#include <linux/spi/spi.h>
 
 /* Define max times to check status register before we give up. */
 
@@ -37,7 +38,6 @@
  */
 #define CHIP_ERASE_2MB_READY_WAIT_JIFFIES	(40UL * HZ)
 
-#define SPI_NOR_MAX_ID_LEN	6
 #define SPI_NOR_MAX_ADDR_WIDTH	4
 
 struct sfdp_parameter_header {
@@ -78,6 +78,23 @@ struct sfdp_header {
 
 /* Basic Flash Parameter Table */
 
+bool update_stripe(const u8 opcode)
+{
+	if (opcode ==  SPINOR_OP_BE_4K ||
+	    opcode ==  SPINOR_OP_BE_32K ||
+	    opcode ==  SPINOR_OP_CHIP_ERASE ||
+	    opcode ==  SPINOR_OP_SE ||
+	    opcode ==  SPINOR_OP_BE_32K_4B ||
+	    opcode ==  SPINOR_OP_SE_4B ||
+	    opcode == SPINOR_OP_BE_4K_4B ||
+	    opcode ==  SPINOR_OP_WRSR ||
+	    opcode ==  SPINOR_OP_WREAR ||
+	    opcode ==  SPINOR_OP_BRWR ||
+	    opcode ==  SPINOR_OP_WRSR2)
+		return false;
+
+	return true;
+}
 /*
  * JESD216 rev B defines a Basic Flash Parameter Table of 16 DWORDs.
  * They are indexed from 1 but C arrays are indexed from 0.
@@ -196,7 +213,7 @@ struct flash_info {
 	u16		page_size;
 	u16		addr_width;
 
-	u16		flags;
+	u32		flags;
 #define SECT_4K			BIT(0)	/* SPINOR_OP_BE_4K works uniformly */
 #define SPI_NOR_NO_ERASE	BIT(1)	/* No erase command needed */
 #define SST_WRITE		BIT(2)	/* use SST byte programming */
@@ -233,6 +250,10 @@ struct flash_info {
 #define SPI_NOR_SKIP_SFDP	BIT(13)	/* Skip parsing of SFDP tables */
 #define USE_CLSR		BIT(14)	/* use CLSR command */
 #define SPI_NOR_OCTAL_READ	BIT(15)	/* Flash supports Octal Read */
+#define	SST_GLOBAL_PROT_UNLK	BIT(16)	/* Unlock the Global protection for
+					 * sst flashes
+					 */
+#define SPI_NOR_OCTAL_WRITE	BIT(17) /* Flash supports Octal Write */
 
 	/* Part specific fixup hooks. */
 	const struct spi_nor_fixups *fixups;
@@ -388,6 +409,8 @@ static ssize_t spi_nor_write_data(struct spi_nor *nor, loff_t to, size_t len,
 	return nor->write(nor, to, len, buf);
 }
 
+static int write_sr_cr(struct spi_nor *nor, u8 *sr_cr);
+
 /*
  * Read the status register, returning its value in the location
  * Return the status register value.
@@ -396,23 +419,32 @@ static ssize_t spi_nor_write_data(struct spi_nor *nor, loff_t to, size_t len,
 static int read_sr(struct spi_nor *nor)
 {
 	int ret;
+	int count;
+
+	if (nor->isparallel)
+		count = 2;
+	else
+		count = 1;
 
 	if (nor->spimem) {
 		struct spi_mem_op op =
 			SPI_MEM_OP(SPI_MEM_OP_CMD(SPINOR_OP_RDSR, 1),
 				   SPI_MEM_OP_NO_ADDR,
 				   SPI_MEM_OP_NO_DUMMY,
-				   SPI_MEM_OP_DATA_IN(1, nor->bouncebuf, 1));
+				   SPI_MEM_OP_DATA_IN(count, nor->bouncebuf, 1));
 
 		ret = spi_mem_exec_op(nor->spimem, &op);
 	} else {
-		ret = nor->read_reg(nor, SPINOR_OP_RDSR, nor->bouncebuf, 1);
+		ret = nor->read_reg(nor, SPINOR_OP_RDSR, nor->bouncebuf, count);
 	}
 
 	if (ret < 0) {
 		pr_err("error %d reading SR\n", (int) ret);
 		return ret;
 	}
+
+	if (nor->isparallel)
+		nor->bouncebuf[0] |= nor->bouncebuf[1];
 
 	return nor->bouncebuf[0];
 }
@@ -425,17 +457,23 @@ static int read_sr(struct spi_nor *nor)
 static int read_fsr(struct spi_nor *nor)
 {
 	int ret;
+	int count;
+
+	if (nor->isparallel)
+		count = 2;
+	else
+		count = 1;
 
 	if (nor->spimem) {
 		struct spi_mem_op op =
 			SPI_MEM_OP(SPI_MEM_OP_CMD(SPINOR_OP_RDFSR, 1),
 				   SPI_MEM_OP_NO_ADDR,
 				   SPI_MEM_OP_NO_DUMMY,
-				   SPI_MEM_OP_DATA_IN(1, nor->bouncebuf, 1));
+				   SPI_MEM_OP_DATA_IN(count, nor->bouncebuf, 1));
 
 		ret = spi_mem_exec_op(nor->spimem, &op);
 	} else {
-		ret = nor->read_reg(nor, SPINOR_OP_RDFSR, nor->bouncebuf, 1);
+		ret = nor->read_reg(nor, SPINOR_OP_RDFSR, nor->bouncebuf, count);
 	}
 
 	if (ret < 0) {
@@ -715,6 +753,50 @@ static int spi_nor_xread_sr(struct spi_nor *nor, u8 *sr)
 	return nor->read_reg(nor, SPINOR_OP_XRDSR, sr, 1);
 }
 
+/**
+ * read_ear - Get the extended/bank address register value
+ * @nor:	Pointer to the flash control structure
+ *
+ * This routine reads the Extended/bank address register value
+ *
+ * Return:	Negative if error occured.
+ */
+static int read_ear(struct spi_nor *nor, struct flash_info *info)
+{
+	int ret;
+	u8 val;
+	u8 code;
+
+	/* This is actually Spansion */
+	if (JEDEC_MFR(info) == CFI_MFR_AMD)
+		code = SPINOR_OP_BRRD;
+	/* This is actually Micron */
+	else if (JEDEC_MFR(info) == CFI_MFR_ST ||
+		 JEDEC_MFR(info) == CFI_MFR_MACRONIX ||
+		 JEDEC_MFR(info) == SNOR_MFR_ISSI)
+		code = SPINOR_OP_RDEAR;
+	else
+		return -EINVAL;
+
+	if (nor->spimem) {
+		struct spi_mem_op op =
+			SPI_MEM_OP(SPI_MEM_OP_CMD(code, 1),
+				   SPI_MEM_OP_NO_ADDR,
+				   SPI_MEM_OP_NO_DUMMY,
+				   SPI_MEM_OP_DATA_IN(1, nor->bouncebuf, 1));
+
+		ret = spi_mem_exec_op(nor->spimem, &op);
+	} else {
+		ret = nor->read_reg(nor, code, &val, 1);
+	}
+
+	if (ret < 0) {
+		pr_err("error %d reading EAR\n", ret);
+		return ret;
+	}
+	return nor->bouncebuf[0];
+}
+
 static int s3an_sr_ready(struct spi_nor *nor)
 {
 	int ret;
@@ -846,10 +928,57 @@ static int spi_nor_wait_till_ready_with_timeout(struct spi_nor *nor,
 	return -ETIMEDOUT;
 }
 
-static int spi_nor_wait_till_ready(struct spi_nor *nor)
+int spi_nor_wait_till_ready(struct spi_nor *nor)
 {
 	return spi_nor_wait_till_ready_with_timeout(nor,
 						    DEFAULT_READY_WAIT_JIFFIES);
+}
+EXPORT_SYMBOL_GPL(spi_nor_wait_till_ready);
+
+/*
+ * Update Extended Address/bank selection Register.
+ * Call with flash->lock locked.
+ */
+static int write_ear(struct spi_nor *nor, u32 addr)
+{
+	u8 code;
+	u8 ear;
+	int ret;
+	struct mtd_info *mtd = &nor->mtd;
+
+	/* Wait until finished previous write command. */
+	if (spi_nor_wait_till_ready(nor))
+		return 1;
+
+	if (mtd->size <= (0x1000000) << nor->shift)
+		return 0;
+
+	addr = addr % (u32) mtd->size;
+	ear = addr >> 24;
+
+	if ((!nor->isstacked) && (ear == nor->curbank))
+		return 0;
+
+	if (nor->isstacked && (mtd->size <= 0x2000000))
+		return 0;
+
+	if (nor->jedec_id == CFI_MFR_AMD)
+		code = SPINOR_OP_BRWR;
+	if (nor->jedec_id == CFI_MFR_ST ||
+	    nor->jedec_id == CFI_MFR_MACRONIX ||
+	    nor->jedec_id == SNOR_MFR_ISSI) {
+		write_enable(nor);
+		code = SPINOR_OP_WREAR;
+	}
+	nor->bouncebuf[0] = ear;
+
+	ret = nor->write_reg(nor, code, nor->bouncebuf, 1);
+	if (ret < 0)
+		return ret;
+
+	nor->curbank = ear;
+
+	return 0;
 }
 
 /*
@@ -1239,7 +1368,7 @@ destroy_erase_cmd_list:
 static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 {
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
-	u32 addr, len;
+	u32 addr, len, offset;
 	uint32_t rem;
 	int ret;
 
@@ -1291,9 +1420,35 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 	/* "sector"-at-a-time erase */
 	} else if (spi_nor_has_uniform_erase(nor)) {
 		while (len) {
+
+			write_enable(nor);
+			offset = addr;
+			if (nor->isparallel == 1)
+				offset /= 2;
+
+			if (nor->isstacked == 1) {
+				if (offset >= (mtd->size / 2)) {
+					offset = offset - (mtd->size / 2);
+					nor->spi->master->flags |=
+						SPI_MASTER_U_PAGE;
+				} else {
+					nor->spi->master->flags &=
+						~SPI_MASTER_U_PAGE;
+				}
+			}
+			if (nor->addr_width == 3) {
+				/* Update Extended Address Register */
+				ret = write_ear(nor, offset);
+				if (ret)
+					goto erase_err;
+			}
+			ret = spi_nor_wait_till_ready(nor);
+			if (ret)
+				goto erase_err;
+
 			write_enable(nor);
 
-			ret = spi_nor_erase_sector(nor, addr);
+			ret = spi_nor_erase_sector(nor, offset);
 			if (ret)
 				goto erase_err;
 
@@ -1316,6 +1471,118 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 
 erase_err:
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_ERASE);
+
+	return ret;
+}
+
+static inline uint16_t min_lockable_sectors(struct spi_nor *nor,
+					    uint16_t n_sectors)
+{
+	uint16_t lock_granularity;
+
+	/*
+	 * Revisit - SST (not used by us) has the same JEDEC ID as micron but
+	 * protected area table is similar to that of spansion.
+	 */
+	lock_granularity = max(1, n_sectors/M25P_MAX_LOCKABLE_SECTORS);
+	if (nor->jedec_id == CFI_MFR_ST)	/* Micron */
+		lock_granularity = 1;
+
+	return lock_granularity;
+}
+
+static inline uint32_t get_protected_area_start(struct spi_nor *nor,
+						uint8_t lock_bits)
+{
+	u16 n_sectors;
+	u32 sector_size;
+	uint64_t mtd_size;
+	struct mtd_info *mtd = &nor->mtd;
+
+	n_sectors = nor->n_sectors;
+	sector_size = nor->sector_size;
+	mtd_size = mtd->size;
+
+	if (nor->isparallel) {
+		sector_size = (nor->sector_size >> 1);
+		mtd_size = (mtd->size >> 1);
+	}
+	if (nor->isstacked) {
+		n_sectors = (nor->n_sectors >> 1);
+		mtd_size = (mtd->size >> 1);
+	}
+
+	return mtd_size - (1<<(lock_bits-1)) *
+		min_lockable_sectors(nor, n_sectors) * sector_size;
+}
+
+static uint8_t min_protected_area_including_offset(struct spi_nor *nor,
+						   uint32_t offset)
+{
+	uint8_t lock_bits, lockbits_limit;
+
+	/*
+	 * Revisit - SST (not used by us) has the same JEDEC ID as micron but
+	 * protected area table is similar to that of spansion.
+	 * Mircon has 4 block protect bits.
+	 */
+	lockbits_limit = 7;
+	if (nor->jedec_id == CFI_MFR_ST)	/* Micron */
+		lockbits_limit = 15;
+
+	for (lock_bits = 1; lock_bits < lockbits_limit; lock_bits++) {
+		if (offset >= get_protected_area_start(nor, lock_bits))
+			break;
+	}
+	return lock_bits;
+}
+
+static int write_sr_modify_protection(struct spi_nor *nor, uint8_t status,
+				      uint8_t lock_bits)
+{
+	uint8_t status_new, bp_mask;
+	u8 val[2];
+
+	status_new = status & ~SR_BP_BIT_MASK;
+	bp_mask = (lock_bits << SR_BP_BIT_OFFSET) & SR_BP_BIT_MASK;
+
+	/* Micron */
+	if (nor->jedec_id == CFI_MFR_ST) {
+		/* To support chips with more than 896 sectors (56MB) */
+		status_new &= ~SR_BP3;
+
+		/* Protected area starts from top */
+		status_new &= ~SR_BP_TB;
+
+		if (lock_bits > 7)
+			bp_mask |= SR_BP3;
+	}
+
+	if (nor->is_lock)
+		status_new |= bp_mask;
+
+	write_enable(nor);
+
+	/* For spansion flashes */
+	if (nor->jedec_id == CFI_MFR_AMD) {
+		val[1] = read_cr(nor) << 8;
+		val[0] |= status_new;
+		if (write_sr_cr(nor, val) < 0)
+			return 1;
+	} else {
+		if (write_sr(nor, status_new) < 0)
+			return 1;
+	}
+	return 0;
+}
+
+static uint8_t bp_bits_from_sr(struct spi_nor *nor, uint8_t status)
+{
+	uint8_t ret;
+
+	ret = (((status) & SR_BP_BIT_MASK) >> SR_BP_BIT_OFFSET);
+	if (nor->jedec_id == 0x20)
+		ret |= ((status & SR_BP3) >> (SR_BP_BIT_OFFSET + 1));
 
 	return ret;
 }
@@ -1616,13 +1883,34 @@ static int spi_nor_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 {
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
 	int ret;
+	uint8_t status;
+	uint8_t lock_bits;
 
 	ret = spi_nor_lock_and_prep(nor, SPI_NOR_OPS_LOCK);
 	if (ret)
 		return ret;
 
-	ret = nor->params.locking_ops->lock(nor, ofs, len);
+	if (nor->isparallel == 1)
+		ofs = ofs >> nor->shift;
 
+	ret = nor->params.locking_ops->lock(nor, ofs, len);
+	/* Wait until finished previous command */
+	ret = spi_nor_wait_till_ready(nor);
+	if (ret)
+		goto err;
+
+	status = read_sr(nor);
+
+	lock_bits = min_protected_area_including_offset(nor, ofs);
+
+	/* Only modify protection if it will not unlock other areas */
+	if (lock_bits > bp_bits_from_sr(nor, status)) {
+		nor->is_lock = 1;
+		ret = write_sr_modify_protection(nor, status, lock_bits);
+	}
+	else
+		dev_err(nor->dev, "trying to unlock already locked area\n");
+err:
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
 	return ret;
 }
@@ -1631,13 +1919,34 @@ static int spi_nor_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 {
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
 	int ret;
+	uint8_t status;
+	uint8_t lock_bits;
 
 	ret = spi_nor_lock_and_prep(nor, SPI_NOR_OPS_UNLOCK);
 	if (ret)
 		return ret;
 
-	ret = nor->params.locking_ops->unlock(nor, ofs, len);
+	if (nor->isparallel == 1)
+		ofs = ofs >> nor->shift;
 
+	ret = nor->params.locking_ops->unlock(nor, ofs, len);
+	/* Wait until finished previous command */
+	ret = spi_nor_wait_till_ready(nor);
+	if (ret)
+		goto err;
+
+	status = read_sr(nor);
+
+	lock_bits = min_protected_area_including_offset(nor, ofs+len) - 1;
+
+	/* Only modify protection if it will not lock other areas */
+	if (lock_bits < bp_bits_from_sr(nor, status)) {
+		nor->is_lock = 0;
+		ret = write_sr_modify_protection(nor, status, lock_bits);
+	}
+	else
+		dev_err(nor->dev, "trying to lock already unlocked area\n");
+err:
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
 	return ret;
 }
@@ -2237,6 +2546,17 @@ static const struct flash_info spi_nor_ids[] = {
 			SPI_NOR_4B_OPCODES | SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
 			.fixups = &gd25q256_fixups,
 	},
+	{
+		"mt35xu02g", INFO(0x2c5b1c, 0, 128 * 1024, 2048,
+			SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
+			SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
+	},
+	{
+		"mt35xu01g", INFO(0x2c5b1b, 0, 128 * 1024, 1024,
+			SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
+			SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
+	},
+
 
 	/* Intel/Numonyx -- xxxs33b */
 	{ "160s33b",  INFO(0x898911, 0, 64 * 1024,  32, 0) },
@@ -2244,6 +2564,28 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "640s33b",  INFO(0x898913, 0, 64 * 1024, 128, 0) },
 
 	/* ISSI */
+	{ "is25lp080d", INFO(0x9d6014, 0, 64 * 1024, 32, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp080d", INFO(0x9d7014, 0, 64 * 1024, 32, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25lp016d", INFO(0x9d6015, 0, 64 * 1024, 32, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp016d", INFO(0x9d7015, 0, 64 * 1024, 32, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25lp032d", INFO(0x9d6016, 0, 64 * 1024, 64, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp032d", INFO(0x9d7016, 0, 64 * 1024, 64, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25lp064a", INFO(0x9d6017, 0, 64 * 1024, 128, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp064a", INFO(0x9d7017, 0, 64 * 1024, 128, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25lp128f", INFO(0x9d6018, 0, 64 * 1024, 256, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp128f", INFO(0x9d7018, 0, 64 * 1024, 256, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25lp256d", INFO(0x9d6019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp256d", INFO(0x9d7019, 0, 64 * 1024, 512,
+			SECT_4K | SPI_NOR_DUAL_READ |
+			SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK |
+			SPI_NOR_4B_OPCODES) },
+	{ "is25lp512m", INFO(0x9d601a, 0, 64 * 1024, 1024,
+			SECT_4K | SPI_NOR_DUAL_READ |
+			SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "is25wp512m", INFO(0x9d701a, 0, 64 * 1024, 1024,
+			SECT_4K | SPI_NOR_DUAL_READ |
+			SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK |
+			SPI_NOR_4B_OPCODES) },
 	{ "is25cd512",  INFO(0x7f9d20, 0, 32 * 1024,   2, SECT_4K) },
 	{ "is25lq040b", INFO(0x9d4013, 0, 64 * 1024,   8,
 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
@@ -2297,6 +2639,7 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "mx66l51235l", INFO(0xc2201a, 0, 64 * 1024, 1024, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
 	{ "mx66u51235f", INFO(0xc2253a, 0, 64 * 1024, 1024, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
 	{ "mx66l1g45g",  INFO(0xc2201b, 0, 64 * 1024, 2048, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+	{ "mx66u1g45g",  INFO(0xc2253b, 0, 64 * 1024, 2048, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 	{ "mx66l1g55g",  INFO(0xc2261b, 0, 64 * 1024, 2048, SPI_NOR_QUAD_READ) },
 
 	/* Micron <--> ST Micro */
@@ -2305,28 +2648,31 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "n25q032a",	 INFO(0x20bb16, 0, 64 * 1024,   64, SPI_NOR_QUAD_READ) },
 	{ "n25q064",     INFO(0x20ba17, 0, 64 * 1024,  128, SECT_4K | SPI_NOR_QUAD_READ) },
 	{ "n25q064a",    INFO(0x20bb17, 0, 64 * 1024,  128, SECT_4K | SPI_NOR_QUAD_READ) },
-	{ "n25q128a11",  INFO(0x20bb18, 0, 64 * 1024,  256, SECT_4K | SPI_NOR_QUAD_READ) },
-	{ "n25q128a13",  INFO(0x20ba18, 0, 64 * 1024,  256, SECT_4K | SPI_NOR_QUAD_READ) },
-	{ "n25q256a",    INFO(0x20ba19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+	{ "n25q128a11",  INFO(0x20bb18, 0, 64 * 1024,  256, SECT_4K | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_HAS_LOCK) },
+	{ "n25q128a13",  INFO(0x20ba18, 0, 64 * 1024,  256, SECT_4K | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_HAS_LOCK) },
+	{ "n25q256a",    INFO(0x20bb19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_QUAD_READ | USE_FSR| SPI_NOR_HAS_LOCK) },
+	{ "n25q256a13",  INFO(0x20ba19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_HAS_LOCK) },
 	{ "n25q256ax1",  INFO(0x20bb19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_QUAD_READ) },
-	{ "n25q512ax3",  INFO(0x20ba20, 0, 64 * 1024, 1024, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ) },
-	{ "mt25qu512a",  INFO6(0x20bb20, 0x104400, 64 * 1024, 1024,
-			       SECT_4K | USE_FSR | SPI_NOR_DUAL_READ |
-			       SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
-	{ "n25q512a",    INFO(0x20bb20, 0, 64 * 1024, 1024, SECT_4K |
-			      SPI_NOR_QUAD_READ) },
-	{ "n25q00",      INFO(0x20ba21, 0, 64 * 1024, 2048, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | NO_CHIP_ERASE) },
-	{ "n25q00a",     INFO(0x20bb21, 0, 64 * 1024, 2048, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | NO_CHIP_ERASE) },
+	{ "n25q512a",    INFO(0x20bb20, 0, 64 * 1024, 1024, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "n25q512a13",  INFO(0x20ba20, 0, 64 * 1024, 1024, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_HAS_LOCK) },
+	{ "n25q512ax3",  INFO(0x20ba20, 0, 64 * 1024, 1024, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK) },
+	{ "n25q00",      INFO(0x20ba21, 0, 64 * 1024, 2048, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | NO_CHIP_ERASE) },
+	{ "n25q00a",     INFO(0x20bb21, 0, 64 * 1024, 2048, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | NO_CHIP_ERASE) },
 	{ "mt25ql02g",   INFO(0x20ba22, 0, 64 * 1024, 4096,
 			      SECT_4K | USE_FSR | SPI_NOR_QUAD_READ |
 			      NO_CHIP_ERASE) },
-	{ "mt25qu02g",   INFO(0x20bb22, 0, 64 * 1024, 4096, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | NO_CHIP_ERASE) },
+	{ "mt25qu512a (n25q512a)", INFO(0x20bb20, 0, 64 * 1024, 1024,
+					SECT_4K | USE_FSR | SPI_NOR_DUAL_READ |
+					SPI_NOR_QUAD_READ |
+					SPI_NOR_4B_OPCODES) },
+	{ "mt25ql02g",   INFO(0x20ba22, 0, 64 * 1024, 4096, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | NO_CHIP_ERASE) },
+	{ "mt25ul02g",   INFO(0x20bb22, 0, 64 * 1024, 4096, SECT_4K | USE_FSR | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | NO_CHIP_ERASE) },
 
 	/* Micron */
 	{
 		"mt35xu512aba", INFO(0x2c5b1a, 0, 128 * 1024, 512,
 			SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
-			SPI_NOR_4B_OPCODES)
+			SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
 	},
 	{ "mt35xu02g",  INFO(0x2c5b1c, 0, 128 * 1024, 2048,
 			     SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
@@ -2346,17 +2692,18 @@ static const struct flash_info spi_nor_ids[] = {
 			SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
 	{ "s25fl128s1", INFO6(0x012018, 0x4d0180, 64 * 1024, 256,
 			SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
-	{ "s25fl256s0", INFO(0x010219, 0x4d00, 256 * 1024, 128, USE_CLSR) },
+	{ "s25fl256s0", INFO(0x010219, 0x4d00, 256 * 1024, 128, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | USE_CLSR) },
 	{ "s25fl256s1", INFO(0x010219, 0x4d01,  64 * 1024, 512, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
 	{ "s25fl512s",  INFO6(0x010220, 0x4d0080, 256 * 1024, 256,
 			SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
 			SPI_NOR_HAS_LOCK | USE_CLSR) },
 	{ "s25fs512s",  INFO6(0x010220, 0x4d0081, 256 * 1024, 256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
-	{ "s70fl01gs",  INFO(0x010221, 0x4d00, 256 * 1024, 256, 0) },
-	{ "s25sl12800", INFO(0x012018, 0x0300, 256 * 1024,  64, 0) },
-	{ "s25sl12801", INFO(0x012018, 0x0301,  64 * 1024, 256, 0) },
-	{ "s25fl129p0", INFO(0x012018, 0x4d00, 256 * 1024,  64, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
-	{ "s25fl129p1", INFO(0x012018, 0x4d01,  64 * 1024, 256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_CLSR) },
+	{ "s70fl01gs",  INFO(0x010221, 0x4d00, 256 * 1024, 256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+	{ "s25sl12800", INFO(0x012018, 0x0300, 256 * 1024,  64, SPI_NOR_HAS_LOCK) },
+	{ "s25sl12801", INFO(0x012018, 0x0301,  64 * 1024, 256, SPI_NOR_HAS_LOCK) },
+	{ "s25fl128s",	INFO6(0x012018, 0x4d0180, 64 * 1024, 256, SPI_NOR_QUAD_READ | USE_CLSR) },
+	{ "s25fl129p0", INFO(0x012018, 0x4d00, 256 * 1024,  64, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | USE_CLSR) },
+	{ "s25fl129p1", INFO(0x012018, 0x4d01,  64 * 1024, 256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_HAS_LOCK | USE_CLSR) },
 	{ "s25sl004a",  INFO(0x010212,      0,  64 * 1024,   8, 0) },
 	{ "s25sl008a",  INFO(0x010213,      0,  64 * 1024,  16, 0) },
 	{ "s25sl016a",  INFO(0x010214,      0,  64 * 1024,  32, 0) },
@@ -2374,6 +2721,7 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "s25fl064l",  INFO(0x016017,      0,  64 * 1024, 128, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
 	{ "s25fl128l",  INFO(0x016018,      0,  64 * 1024, 256, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
 	{ "s25fl256l",  INFO(0x016019,      0,  64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
+	{ "sst26wf016B", INFO(0xbf2651, 0, 64 * 1024, 32, SECT_4K | SST_GLOBAL_PROT_UNLK) },
 
 	/* SST -- large erase sizes are "overlays", "sectors" are 4K */
 	{ "sst25vf040b", INFO(0xbf258d, 0, 64 * 1024,  8, SECT_4K | SST_WRITE) },
@@ -2390,6 +2738,8 @@ static const struct flash_info spi_nor_ids[] = {
 	{ "sst25wf080",  INFO(0xbf2505, 0, 64 * 1024, 16, SECT_4K | SST_WRITE) },
 	{ "sst26wf016b", INFO(0xbf2651, 0, 64 * 1024, 32, SECT_4K |
 			      SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
+	{ "sst26vf016b", INFO(0xbf2641, 0, 64 * 1024, 32,
+			 SECT_4K | SST_GLOBAL_PROT_UNLK) },
 	{ "sst26vf064b", INFO(0xbf2643, 0, 64 * 1024, 128, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 
 	/* ST Microelectronics -- newer production may have feature updates */
@@ -2479,7 +2829,7 @@ static const struct flash_info spi_nor_ids[] = {
 	},
 	{ "w25q80", INFO(0xef5014, 0, 64 * 1024,  16, SECT_4K) },
 	{ "w25q80bl", INFO(0xef4014, 0, 64 * 1024,  16, SECT_4K) },
-	{ "w25q128", INFO(0xef4018, 0, 64 * 1024, 256, SECT_4K) },
+	{ "w25q128", INFO(0xef4018, 0, 64 * 1024, 256, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 	{ "w25q256", INFO(0xef4019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 	{ "w25q256jvm", INFO(0xef7019, 0, 64 * 1024, 512,
 			     SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
@@ -2529,6 +2879,9 @@ static const struct flash_info *spi_nor_read_id(struct spi_nor *nor)
 		return ERR_PTR(tmp);
 	}
 
+	for (tmp = 0; tmp < SPI_NOR_MAX_ID_LEN; tmp++)
+		nor->device_id[tmp] = id[tmp];
+
 	for (tmp = 0; tmp < ARRAY_SIZE(spi_nor_ids) - 1; tmp++) {
 		info = &spi_nor_ids[tmp];
 		if (info->id_len) {
@@ -2545,20 +2898,107 @@ static int spi_nor_read(struct mtd_info *mtd, loff_t from, size_t len,
 			size_t *retlen, u_char *buf)
 {
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
-	ssize_t ret;
+	int ret;
+	u32 offset = from;
+	u32 stack_shift = 0;
+	u32 read_len = 0;
+	u32 rem_bank_len = 0;
+	u8 bank;
+	u8 is_ofst_odd = 0;
+	loff_t addr = 0;
+	u8 cur_bank;
+	u8 nxt_bank;
+	u32 bank_size;
+	u_char *ptr;
+
+#define OFFSET_16_MB 0x1000000
 
 	dev_dbg(nor->dev, "from 0x%08x, len %zd\n", (u32)from, len);
+
+	if ((nor->isparallel) && (offset & 1)) {
+		/* We can hit this case when we use file system like ubifs */
+		from = (loff_t)(from - 1);
+		len = (size_t)(len + 1);
+		is_ofst_odd = 1;
+		ptr = kmalloc(len, GFP_KERNEL);
+		if (!ptr)
+			return -ENOMEM;
+
+	} else {
+		ptr = buf;
+	}
 
 	ret = spi_nor_lock_and_prep(nor, SPI_NOR_OPS_READ);
 	if (ret)
 		return ret;
 
 	while (len) {
-		loff_t addr = from;
+		if (nor->addr_width == 3) {
+			bank = (u32)from / (OFFSET_16_MB << nor->shift);
+			rem_bank_len = ((OFFSET_16_MB << nor->shift) *
+							(bank + 1)) - from;
+		}
+		offset = from;
 
-		addr = spi_nor_convert_addr(nor, addr);
+		if (nor->isparallel == 1)
+			offset /= 2;
 
-		ret = spi_nor_read_data(nor, addr, len, buf);
+		if (nor->isstacked == 1) {
+			stack_shift = 1;
+			if (offset >= (mtd->size / 2)) {
+				offset = offset - (mtd->size / 2);
+				nor->spi->master->flags |= SPI_MASTER_U_PAGE;
+			} else {
+				nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
+			}
+		}
+
+		if (nor->addr_width == 4) {
+			/*
+			 * Some flash devices like N25Q512 have multiple dies
+			 * in it. Read operation in these devices is bounded
+			 * by its die segment. In a continuous read, across
+			 * multiple dies, when the last byte of the selected
+			 * die segment is read, the next byte read is the
+			 * first byte of the same die segment. This is Die
+			 * cross over issue. So to handle this issue, split
+			 * a read transaction, that spans across multiple
+			 * banks, into one read per bank. Bank size is 16MB
+			 * for single and dual stacked mode and 32MB for dual
+			 * parallel mode.
+			 */
+			if (nor->spi && nor->spi->multi_die) {
+				bank_size = (OFFSET_16_MB << nor->shift);
+				cur_bank = offset / bank_size;
+				nxt_bank = (offset + len) / bank_size;
+				if (cur_bank != nxt_bank)
+					rem_bank_len = (bank_size *
+							(cur_bank + 1)) -
+							offset;
+				else
+					rem_bank_len = (mtd->size >>
+							stack_shift) -
+							(offset << nor->shift);
+			} else {
+				rem_bank_len = (mtd->size >> stack_shift) -
+						(offset << nor->shift);
+			}
+		}
+		if (nor->addr_width == 3)
+			write_ear(nor, offset);
+		if (len < rem_bank_len)
+			read_len = len;
+		else
+			read_len = rem_bank_len;
+
+		/* Wait till previous write/erase is done. */
+		ret = spi_nor_wait_till_ready(nor);
+		if (ret)
+			goto read_err;
+
+		addr = spi_nor_convert_addr(nor, offset);
+
+		ret = spi_nor_read_data(nor, offset, len, ptr);
 		if (ret == 0) {
 			/* We shouldn't see 0-length reads */
 			ret = -EIO;
@@ -2568,14 +3008,25 @@ static int spi_nor_read(struct mtd_info *mtd, loff_t from, size_t len,
 			goto read_err;
 
 		WARN_ON(ret > len);
-		*retlen += ret;
+		if (is_ofst_odd == 1) {
+			memcpy(buf, (ptr + 1), (len - 1));
+			*retlen += (ret - 1);
+		} else {
+			*retlen += ret;
+		}
 		buf += ret;
+		if (!is_ofst_odd)
+			ptr += ret;
 		from += ret;
 		len -= ret;
 	}
 	ret = 0;
 
 read_err:
+
+	if (is_ofst_odd == 1)
+		kfree(ptr);
+
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_READ);
 	return ret;
 }
@@ -2670,40 +3121,90 @@ static int spi_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
 	size_t page_offset, page_remain, i;
 	ssize_t ret;
+	u32 offset, stack_shift=0;
+	u8 bank = 0;
+	u32 rem_bank_len = 0;
+
+#define OFFSET_16_MB 0x1000000
 
 	dev_dbg(nor->dev, "to 0x%08x, len %zd\n", (u32)to, len);
+
+	/*
+	 * Cannot write to odd offset in parallel mode,
+	 * so write 2 bytes first
+	 */
+	if ((nor->isparallel) && (to & 1)) {
+
+		u8 two[2] = {0xff, buf[0]};
+		size_t local_retlen;
+
+		ret = spi_nor_write(mtd, to & ~1, 2, &local_retlen, two);
+		if (ret < 0)
+			return ret;
+
+		*retlen += 1; /* We've written only one actual byte */
+		++buf;
+		--len;
+		++to;
+	}
 
 	ret = spi_nor_lock_and_prep(nor, SPI_NOR_OPS_WRITE);
 	if (ret)
 		return ret;
-
 	for (i = 0; i < len; ) {
 		ssize_t written;
 		loff_t addr = to + i;
-
-		/*
-		 * If page_size is a power of two, the offset can be quickly
-		 * calculated with an AND operation. On the other cases we
-		 * need to do a modulus operation (more expensive).
-		 * Power of two numbers have only one bit set and we can use
-		 * the instruction hweight32 to detect if we need to do a
-		 * modulus (do_div()) or not.
-		 */
-		if (hweight32(nor->page_size) == 1) {
-			page_offset = addr & (nor->page_size - 1);
-		} else {
-			uint64_t aux = addr;
-
-			page_offset = do_div(aux, nor->page_size);
+		if (nor->addr_width == 3) {
+			bank = (u32)to / (OFFSET_16_MB << nor->shift);
+			rem_bank_len = ((OFFSET_16_MB << nor->shift) *
+							(bank + 1)) - to;
 		}
-		/* the size of data remaining on the first page */
-		page_remain = min_t(size_t,
-				    nor->page_size - page_offset, len - i);
+
+		page_offset = ((to + i)) & (nor->page_size - 1);
+
+		offset = (to + i);
+
+		if (nor->isparallel == 1)
+			offset /= 2;
+
+		if (nor->isstacked == 1) {
+			stack_shift = 1;
+			if (offset >= (mtd->size / 2)) {
+				offset = offset - (mtd->size / 2);
+				nor->spi->master->flags |= SPI_MASTER_U_PAGE;
+			} else {
+				nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
+			}
+		}
+
+		/* Die cross over issue is not handled */
+		if (nor->addr_width == 4)
+			rem_bank_len = (mtd->size >> stack_shift) - offset;
+		if (nor->addr_width == 3)
+			write_ear(nor, offset);
+		if (nor->isstacked == 1) {
+			if (len <= rem_bank_len) {
+				page_remain = min_t(size_t,
+					 nor->page_size - page_offset, len - i);
+			} else {
+				/*
+				 * the size of data remaining
+				 * on the first page
+				 */
+				page_remain = rem_bank_len;
+			}
+		} else {
+			page_remain = min_t(size_t,
+					 nor->page_size - page_offset, len - i);
+		}
+		ret = spi_nor_wait_till_ready(nor);
+		if (ret)
+			goto write_err;
 
 		addr = spi_nor_convert_addr(nor, addr);
 
 		write_enable(nor);
-		ret = spi_nor_write_data(nor, addr, page_remain, buf + i);
+		ret = spi_nor_write_data(nor, (offset), page_remain, buf + i);
 		if (ret < 0)
 			goto write_err;
 		written = ret;
@@ -2937,7 +3438,7 @@ static int spi_nor_spimem_check_op(struct spi_nor *nor,
 	 */
 	op->addr.nbytes = 4;
 	if (!spi_mem_supports_op(nor->spimem, op)) {
-		if (nor->mtd.size > SZ_16M)
+		if ((nor->mtd.size > SZ_16M) && (!nor->isparallel))
 			return -ENOTSUPP;
 
 		/* If flash size <= 16MB, 3 address bytes are sufficient */
@@ -3415,6 +3916,7 @@ static int spi_nor_parse_bfpt(struct spi_nor *nor,
 	}
 	params->size >>= 3; /* Convert to bytes. */
 
+
 	/* Fast Read settings. */
 	for (i = 0; i < ARRAY_SIZE(sfdp_bfpt_reads); i++) {
 		const struct sfdp_bfpt_read *rd = &sfdp_bfpt_reads[i];
@@ -3431,6 +3933,8 @@ static int spi_nor_parse_bfpt(struct spi_nor *nor,
 		half = bfpt.dwords[rd->settings_dword] >> rd->settings_shift;
 		spi_nor_set_read_settings_from_bfpt(read, half, rd->proto);
 	}
+	if (params->size > 0x1000000 && nor->addr_width == 3)
+		return -EINVAL;
 
 	/*
 	 * Sector Erase settings. Reinitialize the uniform erase map using the
@@ -4290,7 +4794,7 @@ static int spi_nor_select_erase(struct spi_nor *nor)
 		if (!erase)
 			return -EINVAL;
 		nor->erase_opcode = erase->opcode;
-		mtd->erasesize = erase->size;
+		mtd->erasesize = erase->size << nor->shift;
 		return 0;
 	}
 
@@ -4308,7 +4812,7 @@ static int spi_nor_select_erase(struct spi_nor *nor)
 	if (!erase)
 		return -EINVAL;
 
-	mtd->erasesize = erase->size;
+	mtd->erasesize = erase->size << nor->shift;
 	return 0;
 }
 
@@ -4339,6 +4843,14 @@ static int spi_nor_default_setup(struct spi_nor *nor,
 		 * Yet another reason to switch to spi-mem.
 		 */
 		ignored_mask = SNOR_HWCAPS_X_X_X;
+
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			if (hwcaps->mask & SNOR_HWCAPS_READ_8_8_8)
+				ignored_mask &= ~SNOR_HWCAPS_READ_8_8_8;
+			if (hwcaps->mask & SNOR_HWCAPS_PP_8_8_8)
+				ignored_mask &= ~SNOR_HWCAPS_PP_8_8_8;
+		}
+
 		if (shared_mask & ignored_mask) {
 			dev_dbg(nor->dev,
 				"SPI n-n-n protocols are not supported.\n");
@@ -4410,6 +4922,7 @@ static void spi_nor_manufacturer_init_params(struct spi_nor *nor)
 	/* Init flash parameters based on MFR */
 	switch (JEDEC_MFR(nor->info)) {
 	case SNOR_MFR_MACRONIX:
+	case SNOR_MFR_ISSI:
 		macronix_set_default_init(nor);
 		break;
 
@@ -4513,12 +5026,35 @@ static void spi_nor_info_init_params(struct spi_nor *nor)
 		spi_nor_set_read_settings(&params->reads[SNOR_CMD_READ_1_1_8],
 					  0, 8, SPINOR_OP_READ_1_1_8,
 					  SNOR_PROTO_1_1_8);
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			params->hwcaps.mask |= SNOR_HWCAPS_READ_8_8_8;
+			spi_nor_set_read_settings(&params->reads[SNOR_CMD_READ_8_8_8],
+						  0, 16, SPINOR_OP_READ_1_1_8,
+						  SNOR_PROTO_8_8_8);
+		}
 	}
 
 	/* Page Program settings. */
-	params->hwcaps.mask |= SNOR_HWCAPS_PP;
-	spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP],
-				SPINOR_OP_PP, SNOR_PROTO_1_1_1);
+	if (info->flags & SPI_NOR_OCTAL_WRITE) {
+		params->hwcaps.mask |= SNOR_HWCAPS_PP_1_1_8;
+		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_1_1_8],
+					SPINOR_OP_PP_1_1_8, SNOR_PROTO_1_1_8);
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			params->hwcaps.mask |= SNOR_HWCAPS_PP_8_8_8;
+			spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_8_8_8],
+						SPINOR_OP_PP_1_1_8,
+						SNOR_PROTO_8_8_8);
+		}
+	}
+	if (nor->spi && (nor->spi->mode & SPI_TX_QUAD)) {
+		params->hwcaps.mask |= SNOR_HWCAPS_PP_1_1_4;
+		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP_1_1_4],
+					SPINOR_OP_PP_1_1_4, SNOR_PROTO_1_1_4);
+	} else {
+		params->hwcaps.mask |= SNOR_HWCAPS_PP;
+		spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP],
+					SPINOR_OP_PP, SNOR_PROTO_1_1_1);
+	}
 
 	/*
 	 * Sector Erase settings. Sort Erase Types in ascending order, with the
@@ -4674,6 +5210,28 @@ static int spi_nor_quad_enable(struct spi_nor *nor)
 	return nor->params.quad_enable(nor);
 }
 
+static int spi_nor_switch_micron_octal_ddr(struct spi_nor *nor)
+{
+	u8 cr = SPINOR_VCR_OCTAL_DDR;
+	int ret;
+	u8 program_opcode;
+
+	program_opcode = nor->program_opcode;
+	write_enable(nor);
+	nor->program_opcode = SPINOR_OP_WRCR;
+	nor->addr_width = 3;
+	ret = nor->write(nor, 0x0, 1, &cr);
+	nor->program_opcode = program_opcode;
+	nor->addr_width = 4;
+	if (ret < 0) {
+		dev_err(nor->dev,
+			"error while writing configuration register\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int spi_nor_init(struct spi_nor *nor)
 {
 	int err;
@@ -4748,13 +5306,60 @@ static const struct flash_info *spi_nor_match_id(const char *name)
 
 static int spi_nor_set_addr_width(struct spi_nor *nor)
 {
+	struct device_node *np = spi_nor_get_flash_node(nor);
+	struct device_node *np_spi;
+	struct flash_info *info = (struct flash_info *)nor->info;
+	struct device *dev = nor->dev;
+
 	if (nor->addr_width) {
 		/* already configured from SFDP */
 	} else if (nor->info->addr_width) {
 		nor->addr_width = nor->info->addr_width;
 	} else if (nor->mtd.size > 0x1000000) {
-		/* enable 4-byte addressing if the device exceeds 16MiB */
-		nor->addr_width = 4;
+#ifdef CONFIG_OF
+		np_spi = of_get_next_parent(np);
+		if (of_property_match_string(np_spi, "compatible",
+					     "xlnx,zynq-qspi-1.0") >= 0) {
+			int status;
+
+			nor->addr_width = 3;
+			nor->params.set_4byte(nor, false);
+			status = read_ear(nor, info);
+			if (status < 0)
+				dev_warn(dev, "failed to read ear reg\n");
+			else
+				nor->curbank = status & EAR_SEGMENT_MASK;
+		} else {
+#endif
+			/*
+			 * enable 4-byte addressing
+			 * if the device exceeds 16MiB
+			 */
+			nor->addr_width = 4;
+			if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
+			    info->flags & SPI_NOR_4B_OPCODES)
+				spi_nor_set_4byte_opcodes(nor);
+			else {
+				np_spi = of_get_next_parent(np);
+				if (of_property_match_string(np_spi,
+						"compatible",
+						"xlnx,xps-spi-2.00.a") >= 0) {
+					nor->addr_width = 3;
+					nor->params.set_4byte(nor, false);
+				} else {
+					nor->params.set_4byte(nor, true);
+					if (nor->isstacked) {
+						nor->spi->master->flags |=
+							SPI_MASTER_U_PAGE;
+						nor->params.set_4byte(nor, true);
+						nor->spi->master->flags &=
+							~SPI_MASTER_U_PAGE;
+					}
+				}
+			}
+#ifdef CONFIG_OF
+		}
+#endif
 	} else {
 		nor->addr_width = 3;
 	}
@@ -4766,9 +5371,15 @@ static int spi_nor_set_addr_width(struct spi_nor *nor)
 	}
 
 	/* Set 4byte opcodes when possible. */
-	if (nor->addr_width == 4 && nor->flags & SNOR_F_4B_OPCODES &&
-	    !(nor->flags & SNOR_F_HAS_4BAIT))
-		spi_nor_set_4byte_opcodes(nor);
+
+#ifdef CONFIG_OF
+	np_spi = of_get_next_parent(np);
+	if (of_property_match_string(np_spi, "compatible",
+					     "xlnx,zynq-qspi-1.0") < 0)
+		if (nor->addr_width == 4 && nor->flags & SNOR_F_4B_OPCODES &&
+			!(nor->flags & SNOR_F_HAS_4BAIT))
+			spi_nor_set_4byte_opcodes(nor);
+#endif
 
 	return 0;
 }
@@ -4789,10 +5400,10 @@ static const struct flash_info *spi_nor_get_flash_info(struct spi_nor *nor,
 	const struct flash_info *info = NULL;
 
 	if (name)
-		info = spi_nor_match_id(name);
+		info = (struct flash_info *)spi_nor_match_id(name);
 	/* Try to auto-detect if chip name wasn't specified or not found */
 	if (!info)
-		info = spi_nor_read_id(nor);
+		info = (struct flash_info *)spi_nor_read_id(nor);
 	if (IS_ERR_OR_NULL(info))
 		return ERR_PTR(-ENOENT);
 
@@ -4816,7 +5427,7 @@ static const struct flash_info *spi_nor_get_flash_info(struct spi_nor *nor,
 			 */
 			dev_warn(nor->dev, "found %s, expected %s\n",
 				 jinfo->name, info->name);
-			info = jinfo;
+			info = (struct flash_info *)jinfo;
 		}
 	}
 
@@ -4826,13 +5437,15 @@ static const struct flash_info *spi_nor_get_flash_info(struct spi_nor *nor,
 int spi_nor_scan(struct spi_nor *nor, const char *name,
 		 const struct spi_nor_hwcaps *hwcaps)
 {
-	const struct flash_info *info;
+	struct flash_info *info = NULL;
 	struct device *dev = nor->dev;
 	struct mtd_info *mtd = &nor->mtd;
 	struct device_node *np = spi_nor_get_flash_node(nor);
 	struct spi_nor_flash_parameter *params = &nor->params;
+	struct device_node *np_spi;
 	int ret;
 	int i;
+	u32 is_dual;
 
 	ret = spi_nor_check(nor);
 	if (ret)
@@ -4857,7 +5470,7 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (!nor->bouncebuf)
 		return -ENOMEM;
 
-	info = spi_nor_get_flash_info(nor, name);
+	info = (struct flash_info *)spi_nor_get_flash_info(nor, name);
 	if (IS_ERR(info))
 		return PTR_ERR(info);
 
@@ -4878,6 +5491,9 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (info->flags & SPI_NOR_HAS_LOCK)
 		nor->flags |= SNOR_F_HAS_LOCK;
 
+	if ((u16)JEDEC_MFR(info) != SNOR_MFR_MICRON)
+		nor->flags |= SNOR_F_BROKEN_OCTAL_DDR;
+
 	/*
 	 * Atmel, SST, Intel/Numonyx, and others serial NOR tend to power up
 	 * with the software protection bits set.
@@ -4891,6 +5507,25 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	/* Init flash parameters based on flash_info struct and SFDP */
 	spi_nor_init_params(nor);
 
+	/*
+	 * Atmel, SST, Intel/Numonyx, and others serial NOR tend to power up
+	 * with the software protection bits set
+	 */
+
+	if (JEDEC_MFR(info) == SNOR_MFR_ATMEL ||
+	    JEDEC_MFR(info) == SNOR_MFR_INTEL ||
+	    JEDEC_MFR(info) == SNOR_MFR_SST ||
+	    info->flags & SPI_NOR_HAS_LOCK) {
+		write_enable(nor);
+		write_sr(nor, 0);
+		if (info->flags & SST_GLOBAL_PROT_UNLK) {
+			write_enable(nor);
+			/* Unlock global write protection bits */
+			nor->write_reg(nor, GLOBAL_BLKPROT_UNLK, NULL, 0);
+		}
+		spi_nor_wait_till_ready(nor);
+	}
+
 	if (!mtd->name)
 		mtd->name = dev_name(dev);
 	mtd->priv = nor;
@@ -4900,6 +5535,75 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	mtd->size = params->size;
 	mtd->_erase = spi_nor_erase;
 	mtd->_read = spi_nor_read;
+#ifdef CONFIG_OF
+	np_spi = of_get_next_parent(np);
+	if ((of_property_match_string(np_spi, "compatible",
+		    "xlnx,zynq-qspi-1.0") >= 0) ||
+			(of_property_match_string(np_spi, "compatible",
+					"xlnx,zynqmp-qspi-1.0") >= 0) ||
+			(of_property_match_string(np_spi, "compatible",
+					"xlnx,versal-qspi-1.0") >= 0)) {
+			if (of_property_read_u32(np_spi, "is-dual",
+						 &is_dual) < 0) {
+				/* Default to single if prop not defined */
+				nor->shift = 0;
+				nor->isstacked = 0;
+				nor->isparallel = 0;
+			} else {
+				if (is_dual == 1) {
+					/* dual parallel */
+					nor->shift = 1;
+					info->sector_size <<= nor->shift;
+					info->page_size <<= nor->shift;
+					mtd->size <<= nor->shift;
+					nor->isparallel = 1;
+					nor->isstacked = 0;
+					nor->spi->master->flags |=
+							(SPI_MASTER_DATA_STRIPE
+							| SPI_MASTER_BOTH_CS);
+				} else {
+#ifdef CONFIG_SPI_ZYNQ_QSPI_DUAL_STACKED
+					/* dual stacked */
+					nor->shift = 0;
+					mtd->size <<= 1;
+					info->n_sectors <<= 1;
+					nor->isstacked = 1;
+					nor->isparallel = 0;
+#else
+					u32 is_stacked;
+					if (of_property_read_u32(np_spi,
+							"is-stacked",
+							&is_stacked) < 0) {
+						is_stacked = 0;
+					}
+					if (is_stacked) {
+						/* dual stacked */
+						nor->shift = 0;
+						mtd->size <<= 1;
+						info->n_sectors <<= 1;
+						nor->isstacked = 1;
+						nor->isparallel = 0;
+					} else {
+						/* single */
+						nor->shift = 0;
+						nor->isstacked = 0;
+						nor->isparallel = 0;
+					}
+#endif
+				}
+			}
+	}
+#if 0
+	pr_info("parallel %d stacked %d shift %d mtsize %d\n",
+		nor->isparallel, nor->isstacked, nor->shift, mtd->size);
+#endif
+#else
+	/* Default to single */
+	nor->shift = 0;
+	nor->isstacked = 0;
+	nor->isparallel = 0;
+#endif
+
 	mtd->_resume = spi_nor_resume;
 
 	if (nor->params.locking_ops) {
@@ -4923,9 +5627,22 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (info->flags & USE_CLSR)
 		nor->flags |= SNOR_F_USE_CLSR;
 
+	if (nor->shift)
+		mtd->erasesize = info->sector_size;
+
+#ifdef CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
+	/* prefer "small sector" erase if possible */
+	if (nor->shift &&
+			(info->flags & SECT_4K ||
+			info->flags & SECT_4K_PMC)) {
+		mtd->erasesize = 4096 << nor->shift;
+	}
+#endif
+
 	if (info->flags & SPI_NOR_NO_ERASE)
 		mtd->flags |= MTD_NO_ERASE;
 
+	nor->jedec_id = info->id[0];
 	mtd->dev.parent = dev;
 	nor->page_size = params->page_size;
 	mtd->writebufsize = nor->page_size;
@@ -4943,8 +5660,10 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (ret)
 		return ret;
 
-	if (info->flags & SPI_NOR_4B_OPCODES)
-		nor->flags |= SNOR_F_4B_OPCODES;
+	if (of_property_match_string(np_spi, "compatible",
+					     "xlnx,zynq-qspi-1.0") < 0)
+		if (info->flags & SPI_NOR_4B_OPCODES)
+			nor->flags |= SNOR_F_4B_OPCODES;
 
 	ret = spi_nor_set_addr_width(nor);
 	if (ret)
@@ -4963,6 +5682,14 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 		".erasesize = 0x%.8x (%uKiB) .numeraseregions = %d\n",
 		mtd->name, (long long)mtd->size, (long long)(mtd->size >> 20),
 		mtd->erasesize, mtd->erasesize / 1024, mtd->numeraseregions);
+
+	if (hwcaps->mask & (SNOR_HWCAPS_READ_8_8_8 | SNOR_HWCAPS_PP_8_8_8)) {
+		if (!(nor->flags & SNOR_F_BROKEN_OCTAL_DDR)) {
+			ret = spi_nor_switch_micron_octal_ddr(nor);
+			if (ret)
+				return ret;
+		}
+	}
 
 	if (mtd->numeraseregions)
 		for (i = 0; i < mtd->numeraseregions; i++)
@@ -4997,6 +5724,7 @@ static int spi_nor_probe(struct spi_mem *spimem)
 
 	nor->spimem = spimem;
 	nor->dev = &spi->dev;
+	nor->spi = spi;
 	spi_nor_set_flash_node(nor, spi->dev.of_node);
 
 	spi_mem_set_drvdata(spimem, nor);
@@ -5051,13 +5779,6 @@ static int spi_nor_remove(struct spi_mem *spimem)
 
 	/* Clean up MTD stuff. */
 	return mtd_device_unregister(&nor->mtd);
-}
-
-static void spi_nor_shutdown(struct spi_mem *spimem)
-{
-	struct spi_nor *nor = spi_mem_get_drvdata(spimem);
-
-	spi_nor_restore(nor);
 }
 
 /*
@@ -5145,6 +5866,18 @@ static struct spi_mem_driver spi_nor_driver = {
 	.shutdown = spi_nor_shutdown,
 };
 module_spi_mem_driver(spi_nor_driver);
+
+void spi_nor_shutdown(struct spi_mem *mem)
+{
+	struct spi_nor *nor = spi_mem_get_drvdata(mem);
+
+	if (nor->addr_width == 3 &&
+		(nor->mtd.size >> nor->shift) > 0x1000000)
+		write_ear(nor, 0);
+
+	spi_nor_restore(nor);
+}
+EXPORT_SYMBOL_GPL(spi_nor_shutdown);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Huang Shijie <shijie8@gmail.com>");

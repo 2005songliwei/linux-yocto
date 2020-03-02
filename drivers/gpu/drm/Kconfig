@@ -318,6 +318,10 @@ source "drivers/gpu/drm/bridge/Kconfig"
 
 source "drivers/gpu/drm/sti/Kconfig"
 
+source "drivers/gpu/drm/xilinx/Kconfig"
+
+source "drivers/gpu/drm/zocl/Kconfig"
+
 source "drivers/gpu/drm/imx/Kconfig"
 
 source "drivers/gpu/drm/ingenic/Kconfig"
@@ -343,6 +347,8 @@ source "drivers/gpu/drm/meson/Kconfig"
 source "drivers/gpu/drm/tiny/Kconfig"
 
 source "drivers/gpu/drm/pl111/Kconfig"
+
+source "drivers/gpu/drm/xlnx/Kconfig"
 
 source "drivers/gpu/drm/tve200/Kconfig"
 

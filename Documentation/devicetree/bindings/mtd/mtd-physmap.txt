@@ -31,6 +31,8 @@ file systems on embedded devices.
    Bits) locking.
  - addr-gpios : (optional) List of GPIO descriptors that will be used to
    address the MSBs address lines. The order goes from LSB to MSB.
+ - multi-die : (optional) boolean to enable support for multiple die flash
+   device.
 
 For JEDEC compatible devices, the following additional properties
 are defined:

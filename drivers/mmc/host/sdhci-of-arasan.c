@@ -18,19 +18,51 @@
 #include <linux/clk-provider.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/delay.h>
 #include <linux/of_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/phy/phy.h>
+#include <linux/mmc/mmc.h>
+#include <linux/soc/xilinx/zynqmp/tap_delays.h>
+#include <linux/soc/xilinx/zynqmp/fw.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
+#include <linux/slab.h>
 
 #include "cqhci.h"
 #include "sdhci-pltfm.h"
 
 #define SDHCI_ARASAN_VENDOR_REGISTER	0x78
+#define SDHCI_ARASAN_ITAPDLY_REGISTER	0xF0F8
+#define SDHCI_ARASAN_OTAPDLY_REGISTER	0xF0FC
+
 #define SDHCI_ARASAN_CQE_BASE_ADDR	0x200
 #define VENDOR_ENHANCED_STROBE		BIT(0)
+#define CLK_CTRL_TIMEOUT_SHIFT		16
+#define CLK_CTRL_TIMEOUT_MASK		(0xf << CLK_CTRL_TIMEOUT_SHIFT)
+#define CLK_CTRL_TIMEOUT_MIN_EXP	13
+#define SD_CLK_25_MHZ				25000000
+#define SD_CLK_19_MHZ				19000000
+#define MAX_TUNING_LOOP 40
 
 #define PHY_CLK_TOO_SLOW_HZ		400000
+
+#define SDHCI_ITAPDLY_CHGWIN		0x200
+#define SDHCI_ITAPDLY_ENABLE		0x100
+#define SDHCI_OTAPDLY_ENABLE		0x40
+
+#define ZYNQMP_ITAP_DELAYS {0x0, 0x15, 0x15, 0x0, 0x15, 0x0,\
+			    0x0, 0x3D, 0x12, 0x0, 0x0}
+#define ZYNQMP_OTAP_DELAYS {0x0, 0x5, 0x6, 0x0, 0x5, 0x3,\
+			    0x3, 0x4, 0x6, 0x3, 0x0}
+
+#define VERSAL_ITAP_DELAYS {0x0, 0x2C, 0x2C, 0x0, 0x2C, 0x0,\
+			    0x0, 0x36, 0x1E, 0x0, 0x0}
+#define VERSAL_OTAP_DELAYS {0x0, 0x5, 0x4, 0x0, 0x4, 0x3,\
+			    0x2, 0x3, 0x5, 0x2, 0x0}
+
+#define MMC_BANK2		0x2
 
 /*
  * On some SoCs the syscon area has a feature where the upper 16-bits of
@@ -57,13 +89,13 @@ struct sdhci_arasan_soc_ctl_field {
 /**
  * struct sdhci_arasan_soc_ctl_map - Map in syscon to corecfg registers
  *
- * It's up to the licensee of the Arsan IP block to make these available
- * somewhere if needed.  Presumably these will be scattered somewhere that's
- * accessible via the syscon API.
- *
  * @baseclkfreq:	Where to find corecfg_baseclkfreq
  * @clockmultiplier:	Where to find corecfg_clockmultiplier
  * @hiword_update:	If true, use HIWORD_UPDATE to access the syscon
+ *
+ * It's up to the licensee of the Arsan IP block to make these available
+ * somewhere if needed.  Presumably these will be scattered somewhere that's
+ * accessible via the syscon API.
  */
 struct sdhci_arasan_soc_ctl_map {
 	struct sdhci_arasan_soc_ctl_field	baseclkfreq;
@@ -72,20 +104,33 @@ struct sdhci_arasan_soc_ctl_map {
 };
 
 /**
- * struct sdhci_arasan_data
+ * struct sdhci_arasan_data - Structure for Arasan Controller Data
+ *
  * @host:		Pointer to the main SDHCI host structure.
  * @clk_ahb:		Pointer to the AHB clock
  * @phy:		Pointer to the generic phy
+ * @mio_bank:		MIO Bank Number for ZynqMP SD Controller pins.
+ * @device_id:		ZynqMP SD controller ID.
+ * @itapdly:		Input Clock Delay for SD card clock.
+ * @otapdly:		Output Clock Delay for SD card clock.
  * @is_phy_on:		True if the PHY is on; false if not.
+ * @has_cqe:		Flag indicating support for Command Queueing.
  * @sdcardclk_hw:	Struct for the clock we might provide to a PHY.
  * @sdcardclk:		Pointer to normal 'struct clock' for sdcardclk_hw.
  * @soc_ctl_base:	Pointer to regmap for syscon for soc_ctl registers.
+ * @pinctrl:		Pointer to pin control structure.
+ * @pins_default:	Pointer to pinctrl state for a device.
  * @soc_ctl_map:	Map to get offsets into soc_ctl registers.
+ * @quirks:		Arasan deviations from spec.
  */
 struct sdhci_arasan_data {
 	struct sdhci_host *host;
 	struct clk	*clk_ahb;
 	struct phy	*phy;
+	u32 mio_bank;
+	u32 device_id;
+	u32 itapdly[MMC_TIMING_MMC_HS400 + 1];
+	u32 otapdly[MMC_TIMING_MMC_HS400 + 1];
 	bool		is_phy_on;
 
 	bool		has_cqe;
@@ -93,6 +138,8 @@ struct sdhci_arasan_data {
 	struct clk      *sdcardclk;
 
 	struct regmap	*soc_ctl_base;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pins_default;
 	const struct sdhci_arasan_soc_ctl_map *soc_ctl_map;
 	unsigned int	quirks; /* Arasan deviations from spec */
 
@@ -101,6 +148,8 @@ struct sdhci_arasan_data {
 /* Controller immediately reports SDHCI_CLOCK_INT_STABLE after enabling the
  * internal clock even when the clock isn't stable */
 #define SDHCI_ARASAN_QUIRK_CLOCK_UNSTABLE BIT(1)
+/* Controller has tap delay setting registers in it's local reg space */
+#define SDHCI_ARASAN_TAPDELAY_REG_LOCAL	BIT(2)
 };
 
 struct sdhci_arasan_of_data {
@@ -123,14 +172,16 @@ static const struct sdhci_arasan_soc_ctl_map intel_lgm_emmc_soc_ctl_map = {
 /**
  * sdhci_arasan_syscon_write - Write to a field in soc_ctl registers
  *
+ * @host:	The sdhci_host
+ * @fld:	The field to write to
+ * @val:	The value to write
+ *
  * This function allows writing to fields in sdhci_arasan_soc_ctl_map.
  * Note that if a field is specified as not available (shift < 0) then
  * this function will silently return an error code.  It will be noisy
  * and print errors for any other (unexpected) errors.
  *
- * @host:	The sdhci_host
- * @fld:	The field to write to
- * @val:	The value to write
+ * Return: 0 on success and error value on error
  */
 static int sdhci_arasan_syscon_write(struct sdhci_host *host,
 				   const struct sdhci_arasan_soc_ctl_field *fld,
@@ -170,6 +221,100 @@ static int sdhci_arasan_syscon_write(struct sdhci_host *host,
 	return ret;
 }
 
+static void arasan_zynqmp_dll_reset(struct sdhci_host *host, u8 deviceid)
+{
+	u16 clk;
+	unsigned long timeout;
+
+	clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL);
+	clk &= ~(SDHCI_CLOCK_CARD_EN | SDHCI_CLOCK_INT_EN);
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	/* Issue DLL Reset */
+	zynqmp_dll_reset(deviceid);
+
+	clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL);
+	clk |= SDHCI_CLOCK_INT_EN;
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	/* Wait max 20 ms */
+	timeout = 20;
+	while (!((clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL))
+				& SDHCI_CLOCK_INT_STABLE)) {
+		if (timeout == 0) {
+			dev_err(mmc_dev(host->mmc),
+				": Internal clock never stabilised.\n");
+			return;
+		}
+		timeout--;
+		mdelay(1);
+	}
+
+	clk |= SDHCI_CLOCK_CARD_EN;
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+}
+
+static int arasan_zynqmp_execute_tuning(struct mmc_host *mmc, u32 opcode)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	int err;
+
+	arasan_zynqmp_dll_reset(host, sdhci_arasan->device_id);
+
+	err = sdhci_execute_tuning(mmc, opcode);
+	if (err)
+		return err;
+
+	arasan_zynqmp_dll_reset(host, sdhci_arasan->device_id);
+
+	return 0;
+}
+
+static void __arasan_set_tap_delay(struct sdhci_host *host, u8 itap_delay,
+				   u8 otap_delay)
+{
+	u32 regval;
+
+	if (itap_delay) {
+		regval = sdhci_readl(host, SDHCI_ARASAN_ITAPDLY_REGISTER);
+		regval |= SDHCI_ITAPDLY_CHGWIN;
+		sdhci_writel(host, regval, SDHCI_ARASAN_ITAPDLY_REGISTER);
+		regval |= SDHCI_ITAPDLY_ENABLE;
+		sdhci_writel(host, regval, SDHCI_ARASAN_ITAPDLY_REGISTER);
+		regval |= itap_delay;
+		sdhci_writel(host, regval, SDHCI_ARASAN_ITAPDLY_REGISTER);
+		regval &= ~SDHCI_ITAPDLY_CHGWIN;
+		sdhci_writel(host, regval, SDHCI_ARASAN_ITAPDLY_REGISTER);
+	}
+
+	if (otap_delay) {
+		regval = sdhci_readl(host, SDHCI_ARASAN_OTAPDLY_REGISTER);
+		regval |= SDHCI_OTAPDLY_ENABLE;
+		sdhci_writel(host, regval, SDHCI_ARASAN_OTAPDLY_REGISTER);
+		regval |= otap_delay;
+		sdhci_writel(host, regval, SDHCI_ARASAN_OTAPDLY_REGISTER);
+	}
+}
+
+static void arasan_set_tap_delay(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	u8 itap_delay;
+	u8 otap_delay;
+
+	itap_delay = sdhci_arasan->itapdly[host->timing];
+	otap_delay = sdhci_arasan->otapdly[host->timing];
+
+	if (sdhci_arasan->quirks & SDHCI_ARASAN_TAPDELAY_REG_LOCAL)
+		__arasan_set_tap_delay(host, itap_delay, otap_delay);
+	else
+		arasan_zynqmp_set_tap_delay(sdhci_arasan->device_id,
+					    itap_delay, otap_delay);
+}
+
 static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -207,6 +352,17 @@ static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 			 * changing clock speeds.
 			 */
 			ctrl_phy = true;
+		}
+	}
+
+	/* Set the Input and Output Tap Delays */
+	if ((host->quirks2 & SDHCI_QUIRK2_CLOCK_STANDARD_25_BROKEN) &&
+		(host->version >= SDHCI_SPEC_300)) {
+		if (clock == SD_CLK_25_MHZ)
+			clock = SD_CLK_19_MHZ;
+		if ((host->timing != MMC_TIMING_LEGACY) &&
+			(host->timing != MMC_TIMING_UHS_SDR12)) {
+			arasan_set_tap_delay(host);
 		}
 	}
 
@@ -296,7 +452,7 @@ static void sdhci_arasan_set_power(struct sdhci_host *host, unsigned char mode,
 	sdhci_set_power_noreg(host, mode, vdd);
 }
 
-static const struct sdhci_ops sdhci_arasan_ops = {
+static struct sdhci_ops sdhci_arasan_ops = {
 	.set_clock = sdhci_arasan_set_clock,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.get_timeout_clock = sdhci_pltfm_clk_get_max_clock,
@@ -308,7 +464,6 @@ static const struct sdhci_ops sdhci_arasan_ops = {
 
 static const struct sdhci_pltfm_data sdhci_arasan_pdata = {
 	.ops = &sdhci_arasan_ops,
-	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
 			SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN |
 			SDHCI_QUIRK2_STOP_WITH_TC,
@@ -384,13 +539,82 @@ static struct sdhci_arasan_of_data intel_lgm_emmc_data = {
 	.pdata = &sdhci_arasan_cqe_pdata,
 };
 
+#ifdef CONFIG_PM
+/**
+ * sdhci_arasan_runtime_suspend - Suspend method for the driver
+ * @dev:	Address of the device structure
+ * Put the device in a low power state.
+ *
+ * Return: 0 on success and error value on error
+ */
+static int sdhci_arasan_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	int ret;
+
+	ret = sdhci_runtime_suspend_host(host);
+	if (ret)
+		return ret;
+
+	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
+		mmc_retune_needed(host->mmc);
+
+	clk_disable(pltfm_host->clk);
+	clk_disable(sdhci_arasan->clk_ahb);
+
+	return 0;
+}
+
+/**
+ * sdhci_arasan_runtime_resume - Resume method for the driver
+ * @dev:	Address of the device structure
+ * Resume operation after suspend
+ *
+ * Return: 0 on success and error value on error
+ */
+static int sdhci_arasan_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	int ret;
+
+	ret = clk_enable(sdhci_arasan->clk_ahb);
+	if (ret) {
+		dev_err(dev, "Cannot enable AHB clock.\n");
+		return ret;
+	}
+
+	ret = clk_enable(pltfm_host->clk);
+	if (ret) {
+		dev_err(dev, "Cannot enable SD clock.\n");
+		return ret;
+	}
+
+	ret = sdhci_runtime_resume_host(host, 0);
+	if (ret)
+		goto out;
+
+	return 0;
+out:
+	clk_disable(pltfm_host->clk);
+	clk_disable(sdhci_arasan->clk_ahb);
+
+	return ret;
+}
+#endif /* ! CONFIG_PM */
+
 #ifdef CONFIG_PM_SLEEP
 /**
  * sdhci_arasan_suspend - Suspend method for the driver
  * @dev:	Address of the device structure
- * Returns 0 on success and error value on error
- *
  * Put the device in a low power state.
+ *
+ * Return: 0 on success and error value on error
  */
 static int sdhci_arasan_suspend(struct device *dev)
 {
@@ -431,9 +655,9 @@ static int sdhci_arasan_suspend(struct device *dev)
 /**
  * sdhci_arasan_resume - Resume method for the driver
  * @dev:	Address of the device structure
- * Returns 0 on success and error value on error
- *
  * Resume operation after suspend
+ *
+ * Return: 0 on success and error value on error
  */
 static int sdhci_arasan_resume(struct device *dev)
 {
@@ -476,8 +700,11 @@ static int sdhci_arasan_resume(struct device *dev)
 }
 #endif /* ! CONFIG_PM_SLEEP */
 
-static SIMPLE_DEV_PM_OPS(sdhci_arasan_dev_pm_ops, sdhci_arasan_suspend,
-			 sdhci_arasan_resume);
+static const struct dev_pm_ops sdhci_arasan_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(sdhci_arasan_suspend, sdhci_arasan_resume)
+	SET_RUNTIME_PM_OPS(sdhci_arasan_runtime_suspend,
+			   sdhci_arasan_runtime_resume, NULL)
+};
 
 static const struct of_device_id sdhci_arasan_of_match[] = {
 	/* SoC-specific compatible strings w/ soc_ctl_map */
@@ -502,6 +729,10 @@ static const struct of_device_id sdhci_arasan_of_match[] = {
 		.compatible = "arasan,sdhci-4.9a",
 		.data = &sdhci_arasan_data,
 	},
+	{
+		.compatible = "xlnx,zynqmp-8.9a",
+		.data = &sdhci_arasan_data,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_arasan_of_match);
@@ -509,12 +740,13 @@ MODULE_DEVICE_TABLE(of, sdhci_arasan_of_match);
 /**
  * sdhci_arasan_sdcardclk_recalc_rate - Return the card clock rate
  *
+ * @hw:			Pointer to the hardware clock structure.
+ * @parent_rate:	The parent rate (should be rate of clk_xin).
+ *
  * Return the current actual rate of the SD card clock.  This can be used
  * to communicate with out PHY.
  *
- * @hw:			Pointer to the hardware clock structure.
- * @parent_rate		The parent rate (should be rate of clk_xin).
- * Returns the card clock rate.
+ * Return: the card clock rate.
  */
 static unsigned long sdhci_arasan_sdcardclk_recalc_rate(struct clk_hw *hw,
 						      unsigned long parent_rate)
@@ -534,6 +766,9 @@ static const struct clk_ops arasan_sdcardclk_ops = {
 /**
  * sdhci_arasan_update_clockmultiplier - Set corecfg_clockmultiplier
  *
+ * @host:		The sdhci_host
+ * @value:		The value to write to syscon registers
+ *
  * The corecfg_clockmultiplier is supposed to contain clock multiplier
  * value of programmable clock generator.
  *
@@ -545,8 +780,6 @@ static const struct clk_ops arasan_sdcardclk_ops = {
  * - The value of corecfg_clockmultiplier should sync with that of corresponding
  *   value reading from sdhci_capability_register. So this function is called
  *   once at probe time and never called again.
- *
- * @host:		The sdhci_host
  */
 static void sdhci_arasan_update_clockmultiplier(struct sdhci_host *host,
 						u32 value)
@@ -573,6 +806,8 @@ static void sdhci_arasan_update_clockmultiplier(struct sdhci_host *host,
 /**
  * sdhci_arasan_update_baseclkfreq - Set corecfg_baseclkfreq
  *
+ * @host:		The sdhci_host
+ *
  * The corecfg_baseclkfreq is supposed to contain the MHz of clk_xin.  This
  * function can be used to make that happen.
  *
@@ -584,8 +819,6 @@ static void sdhci_arasan_update_clockmultiplier(struct sdhci_host *host,
  * - It's assumed that clk_xin is not dynamic and that we use the SDHCI divider
  *   to achieve lower clock rates.  That means that this function is called once
  *   at probe time and never called again.
- *
- * @host:		The sdhci_host
  */
 static void sdhci_arasan_update_baseclkfreq(struct sdhci_host *host)
 {
@@ -612,6 +845,10 @@ static void sdhci_arasan_update_baseclkfreq(struct sdhci_host *host)
 /**
  * sdhci_arasan_register_sdclk - Register the sdclk for a PHY to use
  *
+ * @sdhci_arasan:	Our private data structure.
+ * @clk_xin:		Pointer to the functional clock
+ * @dev:		Pointer to our struct device.
+ *
  * Some PHY devices need to know what the actual card clock is.  In order for
  * them to find out, we'll provide a clock through the common clock framework
  * for them to query.
@@ -624,10 +861,7 @@ static void sdhci_arasan_update_baseclkfreq(struct sdhci_host *host)
  * to create nice clean device tree bindings and later (if needed) we can try
  * re-architecting SDHCI if we see some benefit to it.
  *
- * @sdhci_arasan:	Our private data structure.
- * @clk_xin:		Pointer to the functional clock
- * @dev:		Pointer to our struct device.
- * Returns 0 on success and error value on error
+ * Return: 0 on success and error value on error
  */
 static int sdhci_arasan_register_sdclk(struct sdhci_arasan_data *sdhci_arasan,
 				       struct clk *clk_xin,
@@ -671,10 +905,10 @@ static int sdhci_arasan_register_sdclk(struct sdhci_arasan_data *sdhci_arasan,
 /**
  * sdhci_arasan_unregister_sdclk - Undoes sdhci_arasan_register_sdclk()
  *
+ * @dev:		Pointer to our struct device.
+ *
  * Should be called any time we're exiting and sdhci_arasan_register_sdclk()
  * returned success.
- *
- * @dev:		Pointer to our struct device.
  */
 static void sdhci_arasan_unregister_sdclk(struct device *dev)
 {
@@ -729,6 +963,88 @@ cleanup:
 	return ret;
 }
 
+static void arasan_dt_read_tap_delay(struct device *dev, u32 *tapdly,
+				     u8 mode, const char *prop)
+{
+	struct device_node *np = dev->of_node;
+	/*
+	 * Read Tap Delay values from DT, if the DT does not contain the
+	 * Tap Values then use the pre-defined values
+	 */
+	if (of_property_read_u32(np, prop, &tapdly[mode])) {
+		dev_dbg(dev, "Using predefined tapdly for %s = %d\n",
+			prop, tapdly[mode]);
+	}
+}
+
+/**
+ * arasan_dt_parse_tap_delays - Read Tap Delay values from DT
+ *
+ * @dev:		Pointer to our struct device.
+ *
+ * Called at initialization to parse the values of Tap Delays.
+ */
+static void arasan_dt_parse_tap_delays(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	u32 *itapdly;
+	u32 *otapdly;
+	int i;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,zynqmp-8.9a")) {
+		itapdly = (u32 [MMC_TIMING_MMC_HS400 + 1]) ZYNQMP_ITAP_DELAYS;
+		otapdly = (u32 [MMC_TIMING_MMC_HS400 + 1]) ZYNQMP_OTAP_DELAYS;
+		if (sdhci_arasan->mio_bank == MMC_BANK2) {
+			otapdly[MMC_TIMING_UHS_SDR104] = 0x2;
+			otapdly[MMC_TIMING_MMC_HS200] = 0x2;
+		}
+	} else {
+		itapdly = (u32 [MMC_TIMING_MMC_HS400 + 1]) VERSAL_ITAP_DELAYS;
+		otapdly = (u32 [MMC_TIMING_MMC_HS400 + 1]) VERSAL_OTAP_DELAYS;
+	}
+
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_SD_HS,
+				 "xlnx,itap-delay-sd-hsd");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_UHS_SDR25,
+				 "xlnx,itap-delay-sdr25");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_UHS_SDR50,
+				 "xlnx,itap-delay-sdr50");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_UHS_SDR104,
+				 "xlnx,itap-delay-sdr104");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_UHS_DDR50,
+				 "xlnx,itap-delay-sd-ddr50");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_MMC_HS,
+				 "xlnx,itap-delay-mmc-hsd");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_MMC_DDR52,
+				 "xlnx,itap-delay-mmc-ddr52");
+	arasan_dt_read_tap_delay(dev, itapdly, MMC_TIMING_MMC_HS200,
+				 "xlnx,itap-delay-mmc-hs200");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_SD_HS,
+				 "xlnx,otap-delay-sd-hsd");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_UHS_SDR25,
+				 "xlnx,otap-delay-sdr25");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_UHS_SDR50,
+				 "xlnx,otap-delay-sdr50");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_UHS_SDR104,
+				 "xlnx,otap-delay-sdr104");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_UHS_DDR50,
+				 "xlnx,otap-delay-sd-ddr50");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_MMC_HS,
+				 "xlnx,otap-delay-mmc-hsd");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_MMC_DDR52,
+				 "xlnx,otap-delay-mmc-ddr52");
+	arasan_dt_read_tap_delay(dev, otapdly, MMC_TIMING_MMC_HS200,
+				 "xlnx,otap-delay-mmc-hs200");
+
+	for (i = 0; i <= MMC_TIMING_MMC_HS400; i++) {
+		sdhci_arasan->itapdly[i] = itapdly[i];
+		sdhci_arasan->otapdly[i] = otapdly[i];
+	}
+}
+
 static int sdhci_arasan_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -739,10 +1055,35 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	struct sdhci_pltfm_host *pltfm_host;
 	struct sdhci_arasan_data *sdhci_arasan;
 	struct device_node *np = pdev->dev.of_node;
+	unsigned int host_quirks2 = 0;
 	const struct sdhci_arasan_of_data *data;
 
 	match = of_match_node(sdhci_arasan_of_match, pdev->dev.of_node);
 	data = match->data;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,zynqmp-8.9a")) {
+		char *soc_rev;
+
+		/* read Silicon version using nvmem driver */
+		soc_rev = zynqmp_nvmem_get_silicon_version(&pdev->dev,
+							   "soc_revision");
+		if (PTR_ERR(soc_rev) == -EPROBE_DEFER)
+			/* Do a deferred probe */
+			return -EPROBE_DEFER;
+		else if (IS_ERR(soc_rev))
+			dev_dbg(&pdev->dev, "Error getting silicon version\n");
+
+		/* Set host quirk if the silicon version is v1.0 */
+		if (!IS_ERR(soc_rev) && (*soc_rev == ZYNQMP_SILICON_V1))
+			host_quirks2 |= SDHCI_QUIRK2_NO_1_8_V;
+
+		/* Clean soc_rev if got a valid pointer from nvmem driver
+		 * else we may end up in kernel panic
+		 */
+		if (!IS_ERR(soc_rev))
+			kfree(soc_rev);
+	}
+
 	host = sdhci_pltfm_init(pdev, data->pdata, sizeof(*sdhci_arasan));
 
 	if (IS_ERR(host))
@@ -753,6 +1094,8 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	sdhci_arasan->host = host;
 
 	sdhci_arasan->soc_ctl_map = data->soc_ctl_map;
+
+	host->quirks2 |= host_quirks2;
 
 	node = of_parse_phandle(pdev->dev.of_node, "arasan,soc-ctl-syscon", 0);
 	if (node) {
@@ -802,6 +1145,9 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	if (of_property_read_bool(np, "xlnx,int-clock-stable-broken"))
 		sdhci_arasan->quirks |= SDHCI_ARASAN_QUIRK_CLOCK_UNSTABLE;
 
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,versal-8.9a"))
+		sdhci_arasan->quirks |= SDHCI_ARASAN_TAPDELAY_REG_LOCAL;
+
 	pltfm_host->clk = clk_xin;
 
 	if (of_device_is_compatible(pdev->dev.of_node,
@@ -819,6 +1165,50 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 		if (ret != -EPROBE_DEFER)
 			dev_err(&pdev->dev, "parsing dt failed (%d)\n", ret);
 		goto unreg_clk;
+	}
+
+	if (of_device_is_compatible(pdev->dev.of_node, "arasan,sdhci-8.9a")) {
+		host->quirks |= SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12;
+		host->quirks2 |= SDHCI_QUIRK2_CLOCK_STANDARD_25_BROKEN;
+	}
+
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,zynqmp-8.9a") ||
+	    of_device_is_compatible(pdev->dev.of_node, "xlnx,versal-8.9a")) {
+		arasan_dt_parse_tap_delays(&pdev->dev);
+	}
+
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,zynqmp-8.9a")) {
+		ret = of_property_read_u32(pdev->dev.of_node, "xlnx,mio_bank",
+					   &sdhci_arasan->mio_bank);
+		if (ret < 0) {
+			dev_err(&pdev->dev,
+				"\"xlnx,mio_bank \" property is missing.\n");
+			goto clk_disable_all;
+		}
+		ret = of_property_read_u32(pdev->dev.of_node, "xlnx,device_id",
+					   &sdhci_arasan->device_id);
+		if (ret < 0) {
+			dev_err(&pdev->dev,
+				"\"xlnx,device_id \" property is missing.\n");
+			goto clk_disable_all;
+		}
+
+		host->mmc_host_ops.execute_tuning =
+			arasan_zynqmp_execute_tuning;
+	}
+
+	sdhci_arasan->pinctrl = devm_pinctrl_get(&pdev->dev);
+	if (!IS_ERR(sdhci_arasan->pinctrl)) {
+		sdhci_arasan->pins_default = pinctrl_lookup_state(
+							sdhci_arasan->pinctrl,
+							PINCTRL_STATE_DEFAULT);
+		if (IS_ERR(sdhci_arasan->pins_default)) {
+			dev_err(&pdev->dev, "Missing default pinctrl config\n");
+			return IS_ERR(sdhci_arasan->pins_default);
+		}
+
+		pinctrl_select_state(sdhci_arasan->pinctrl,
+				     sdhci_arasan->pins_default);
 	}
 
 	sdhci_arasan->phy = ERR_PTR(-ENODEV);
@@ -852,6 +1242,13 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	ret = sdhci_arasan_add_host(sdhci_arasan);
 	if (ret)
 		goto err_add_host;
+
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 2000);
+	pm_runtime_mark_last_busy(&pdev->dev);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_forbid(&pdev->dev);
 
 	return 0;
 

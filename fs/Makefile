@@ -131,6 +131,7 @@ obj-$(CONFIG_F2FS_FS)		+= f2fs/
 obj-$(CONFIG_CEPH_FS)		+= ceph/
 obj-$(CONFIG_PSTORE)		+= pstore/
 obj-$(CONFIG_EFIVAR_FS)		+= efivarfs/
+obj-$(CONFIG_YAFFS_FS)		+= yaffs2/
 obj-$(CONFIG_EROFS_FS)		+= erofs/
 obj-$(CONFIG_YAFFS_FS)		+= yaffs2/
 obj-$(CONFIG_AUFS_FS)           += aufs/
