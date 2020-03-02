@@ -15,6 +15,8 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
+#include <linux/delay.h>
+#include <linux/bitfield.h>
 #include "cavium.h"
 
 static void thunder_mmc_acquire_bus(struct cvm_mmc_host *host)
@@ -31,6 +33,8 @@ static void thunder_mmc_int_enable(struct cvm_mmc_host *host, u64 val)
 {
 	writeq(val, host->base + MIO_EMM_INT(host));
 	writeq(val, host->base + MIO_EMM_INT_EN_SET(host));
+	writeq(MIO_EMM_DMA_INT_DMA,
+		host->dma_base + MIO_EMM_DMA_INT(host));
 }
 
 static int thunder_mmc_register_interrupts(struct cvm_mmc_host *host,
@@ -45,12 +49,123 @@ static int thunder_mmc_register_interrupts(struct cvm_mmc_host *host,
 	/* register interrupts */
 	for (i = 0; i < nvec; i++) {
 		ret = devm_request_irq(&pdev->dev, pci_irq_vector(pdev, i),
-				       cvm_mmc_interrupt,
-				       0, cvm_mmc_irq_names[i], host);
+				       cvm_mmc_interrupt, 0,
+				       cvm_mmc_irq_names[i], host);
 		if (ret)
 			return ret;
 	}
 	return 0;
+}
+
+/* calibration evaluates the per tap delay */
+static void thunder_calibrate_mmc(struct cvm_mmc_host *host)
+{
+	u32 retries = 10;
+	u32 delay = 4;
+	unsigned int ps;
+	const char *how = "default";
+
+	if (is_mmc_8xxx(host))
+		return;
+
+	/* set _DEBUG[CLK_ON]=1 as workaround for clock issue */
+	if (is_mmc_otx2_A0(host) || is_mmc_95xx(host))
+		writeq(1, host->base + MIO_EMM_DEBUG(host));
+
+	if (is_mmc_otx2_A0(host)) {
+		/*
+		 * Operation of up to 100 MHz may be achieved by skipping the
+		 * steps that establish the tap delays and instead assuming
+		 * that MIO_EMM_TAP[DELAY] returns 0x4 indicating 78 pS/tap.
+		 */
+	} else {
+		u64 tap;
+		u64 emm_cfg = readq(host->base + MIO_EMM_CFG(host));
+		u64 tcfg;
+		u64 emm_io_ctl;
+		u64 emm_switch;
+		u64 emm_wdog;
+		u64 emm_sts_mask;
+		u64 emm_debug;
+		u64 emm_timing;
+		u64 emm_rca;
+
+		/*
+		 * MIO_EMM_CFG[BUS_ENA] must be zero for calibration,
+		 * but that resets whole host, so save state.
+		 */
+		emm_io_ctl = readq(host->base + MIO_EMM_IO_CTL(host));
+		emm_switch = readq(host->base + MIO_EMM_SWITCH(host));
+		emm_wdog = readq(host->base + MIO_EMM_WDOG(host));
+		emm_sts_mask =
+			readq(host->base + MIO_EMM_STS_MASK(host));
+		emm_debug = readq(host->base + MIO_EMM_DEBUG(host));
+		emm_timing = readq(host->base + MIO_EMM_TIMING(host));
+		emm_rca = readq(host->base + MIO_EMM_RCA(host));
+
+		/* reset controller */
+		tcfg = emm_cfg;
+		tcfg &= ~MIO_EMM_CFG_BUS_ENA;
+		writeq(tcfg, host->base + MIO_EMM_CFG(host));
+		udelay(1);
+
+		/* restart with phantom slot 3 */
+		tcfg |= FIELD_PREP(MIO_EMM_CFG_BUS_ENA, 1ull << 3);
+		writeq(tcfg, host->base + MIO_EMM_CFG(host));
+		mdelay(1);
+
+		/* Start calibration */
+		writeq(0, host->base + MIO_EMM_CALB(host));
+		udelay(5);
+		writeq(START_CALIBRATION, host->base + MIO_EMM_CALB(host));
+		udelay(5);
+
+		do {
+			/* wait for approximately 300 coprocessor clock */
+			udelay(5);
+			tap = readq(host->base + MIO_EMM_TAP(host));
+		} while (!tap && retries--);
+
+		/* leave calibration mode */
+		writeq(0, host->base + MIO_EMM_CALB(host));
+		udelay(5);
+
+		if (retries <= 0 || !tap) {
+			how = "fallback";
+		} else {
+			/* calculate the per-tap delay */
+			delay = tap & MIO_EMM_TAP_DELAY;
+			how = "calibrated";
+		}
+
+		/* restore old state */
+		writeq(emm_cfg, host->base + MIO_EMM_CFG(host));
+		mdelay(1);
+		writeq(emm_rca, host->base + MIO_EMM_RCA(host));
+		writeq(emm_timing, host->base + MIO_EMM_TIMING(host));
+		writeq(emm_debug, host->base + MIO_EMM_DEBUG(host));
+		writeq(emm_sts_mask,
+			host->base + MIO_EMM_STS_MASK(host));
+		writeq(emm_wdog, host->base + MIO_EMM_WDOG(host));
+		writeq(emm_switch, host->base + MIO_EMM_SWITCH(host));
+		writeq(emm_io_ctl, host->base + MIO_EMM_IO_CTL(host));
+		mdelay(1);
+
+	}
+
+	/*
+	 * Scale measured/guessed calibration value to pS:
+	 * The delay value should be multiplied by 10 ns(or 10000 ps)
+	 * and then divided by no of taps to determine the estimated
+	 * delay in pico second. The nominal value is 125 ps per tap.
+	 */
+	ps = (delay * PS_10000) / TOTAL_NO_OF_TAPS;
+	if (host->per_tap_delay != ps) {
+		dev_info(host->dev, "%s delay:%d per_tap_delay:%dpS\n",
+			how, delay, ps);
+		host->per_tap_delay = ps;
+		host->delay_logged = 0;
+	}
 }
 
 static int thunder_mmc_probe(struct pci_dev *pdev,
@@ -81,6 +196,7 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 
 	/* On ThunderX these are identical */
 	host->dma_base = host->base;
+	host->pdev = pdev;
 
 	host->reg_off = 0x2000;
 	host->reg_off_dma = 0x160;
@@ -107,24 +223,32 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	host->need_irq_handler_lock = true;
 	host->last_slot = -1;
 
-	ret = dma_set_mask(dev, DMA_BIT_MASK(48));
 	if (ret)
 		goto error;
 
 	/*
 	 * Clear out any pending interrupts that may be left over from
 	 * bootloader. Writing 1 to the bits clears them.
+	 * Clear DMA FIFO after IRQ disable, then stub any dangling events
 	 */
-	writeq(127, host->base + MIO_EMM_INT_EN(host));
-	writeq(3, host->base + MIO_EMM_DMA_INT_ENA_W1C(host));
-	/* Clear DMA FIFO */
-	writeq(BIT_ULL(16), host->base + MIO_EMM_DMA_FIFO_CFG(host));
+	writeq(~0, host->base + MIO_EMM_INT(host));
+	writeq(~0, host->dma_base + MIO_EMM_DMA_INT_ENA_W1C(host));
+	writeq(~0, host->base + MIO_EMM_INT_EN_CLR(host));
+	writeq(MIO_EMM_DMA_FIFO_CFG_CLR,
+		host->dma_base + MIO_EMM_DMA_FIFO_CFG(host));
+	writeq(~0, host->dma_base + MIO_EMM_DMA_INT(host));
 
 	ret = thunder_mmc_register_interrupts(host, pdev);
 	if (ret)
 		goto error;
 
-	for_each_child_of_node(node, child_node) {
+	/* Run the calibration to calculate per tap delay that would be
+	 * used to evaluate values. These values would be programmed in
+	 * MIO_EMM_TIMING.
+	 */
+	thunder_calibrate_mmc(host);
+
+	for_each_available_child_of_node(node, child_node) {
 		/*
 		 * mmc_of_parse and devm* require one device per slot.
 		 * Create a dummy device per slot and set the node pointer to
@@ -137,12 +261,15 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 			if (!host->slot_pdev[i])
 				continue;
 
+			dev_info(dev, "Probing slot %d\n", i);
+
 			ret = cvm_mmc_of_slot_probe(&host->slot_pdev[i]->dev, host);
 			if (ret)
 				goto error;
 		}
 		i++;
 	}
+
 	dev_info(dev, "probed\n");
 	return 0;
 
@@ -171,8 +298,11 @@ static void thunder_mmc_remove(struct pci_dev *pdev)
 			cvm_mmc_of_slot_remove(host->slot[i]);
 
 	dma_cfg = readq(host->dma_base + MIO_EMM_DMA_CFG(host));
-	dma_cfg &= ~MIO_EMM_DMA_CFG_EN;
+	dma_cfg |= MIO_EMM_DMA_CFG_CLR;
 	writeq(dma_cfg, host->dma_base + MIO_EMM_DMA_CFG(host));
+	do {
+		dma_cfg = readq(host->dma_base + MIO_EMM_DMA_CFG(host));
+	} while (dma_cfg & MIO_EMM_DMA_CFG_EN);
 
 	clk_disable_unprepare(host->clk);
 }

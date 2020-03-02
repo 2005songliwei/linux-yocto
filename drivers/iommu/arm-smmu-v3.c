@@ -86,6 +86,12 @@
 #define IDR5_VAX			GENMASK(11, 10)
 #define IDR5_VAX_52_BIT			1
 
+#define ARM_SMMU_IIDR			0x18
+#define IIDR_CN96XX_A0			0x2b20034c
+#define IIDR_CN96XX_B0			0x2b20134c
+#define IIDR_CN95XX_A0			0x2b30034c
+#define IIDR_CN95XX_A1			0x2b30134c
+
 #define ARM_SMMU_CR0			0x20
 #define CR0_ATSCHK			(1 << 4)
 #define CR0_CMDQEN			(1 << 3)
@@ -599,6 +605,7 @@ struct arm_smmu_device {
 
 #define ARM_SMMU_OPT_SKIP_PREFETCH	(1 << 0)
 #define ARM_SMMU_OPT_PAGE0_REGS_ONLY	(1 << 1)
+#define ARM_SMMU_OPT_FORCE_QDRAIN	(1 << 2)
 	u32				options;
 
 	struct arm_smmu_cmdq		cmdq;
@@ -1388,7 +1395,20 @@ static int arm_smmu_cmdq_issue_cmdlist(struct arm_smmu_device *smmu,
 		 * d. Advance the hardware prod pointer
 		 * Control dependency ordering from the entries becoming valid.
 		 */
-		writel_relaxed(prod, cmdq->q.prod_reg);
+		if (smmu->options & ARM_SMMU_OPT_FORCE_QDRAIN) {
+			u32 p, c = readl_relaxed(cmdq->q.cons_reg);
+			while (Q_IDX(&llq, c) != Q_IDX(&llq, prod) ||
+			       Q_WRP(&llq, c) != Q_WRP(&llq, prod)) {
+				p = Q_IDX(&llq, c) | Q_WRP(&llq, c);
+				p++;
+				writel_relaxed(p, cmdq->q.prod_reg);
+				do {
+					cpu_relax();
+					c = readl_relaxed(cmdq->q.cons_reg);
+				} while (Q_IDX(&llq, c) != Q_IDX(&llq, p));
+			}
+		} else
+			writel_relaxed(prod, cmdq->q.prod_reg);
 
 		/*
 		 * e. Tell the next owner we're done
@@ -3496,6 +3516,25 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 
 	dev_info(smmu->dev, "ias %lu-bit, oas %lu-bit (features 0x%08x)\n",
 		 smmu->ias, smmu->oas, smmu->features);
+
+	/* Options based on implementation */
+	reg = readl_relaxed(smmu->base + ARM_SMMU_IIDR);
+
+	/* Marvell Octeontx2 SMMU wrongly issues unsupported
+	 * 64 byte memory reads under certain conditions for
+	 * reading commands from the command queue.
+	 * Force command queue drain for every two writes,
+	 * so that SMMU issues only 32 byte reads.
+	 */
+	switch (reg) {
+	case IIDR_CN96XX_A0:
+	case IIDR_CN96XX_B0:
+	case IIDR_CN95XX_A0:
+	case IIDR_CN95XX_A1:
+		smmu->options |= ARM_SMMU_OPT_FORCE_QDRAIN;
+		break;
+	}
+
 	return 0;
 }
 

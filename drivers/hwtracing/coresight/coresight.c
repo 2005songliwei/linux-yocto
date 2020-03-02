@@ -20,6 +20,8 @@
 #include <linux/pm_runtime.h>
 
 #include "coresight-etm-perf.h"
+#include <asm/cputype.h>
+
 #include "coresight-priv.h"
 
 static DEFINE_MUTEX(coresight_mutex);
@@ -507,6 +509,7 @@ static int coresight_enabled_sink(struct device *dev, const void *data)
 
 /**
  * coresight_get_enabled_sink - returns the first enabled sink found on the bus
+ * In case the child port is a single source ETR, returns the child port as sink
  * @deactivate:	Whether the 'enable_sink' flag should be reset
  *
  * When operated from perf the deactivate parameter should be set to 'true'.
@@ -517,10 +520,32 @@ static int coresight_enabled_sink(struct device *dev, const void *data)
  * parameter should be set to 'false', hence mandating users to explicitly
  * clear the flag.
  */
-struct coresight_device *coresight_get_enabled_sink(bool deactivate)
+struct coresight_device *coresight_get_enabled_sink(struct coresight_device *s,
+						    bool deactivate)
 {
+	struct coresight_device *child;
 	struct device *dev = NULL;
 
+	if (s == NULL)
+		goto skip_single_source;
+
+	/* If the connected port is an ETR with single trace source,
+	 * nothing to search further.
+	 */
+	child = s->pdata->conns[0].child_dev;
+	if (child == NULL)
+		return NULL;
+	if (s->pdata->nr_outport == 1 &&
+	    child->type == CORESIGHT_DEV_TYPE_SINK &&
+	    child->subtype.sink_subtype == CORESIGHT_DEV_SUBTYPE_SINK_BUFFER &&
+	    child->pdata->nr_inport == 1 &&
+	    child->activated) {
+		if (deactivate)
+			child->activated = false;
+		return child;
+	}
+
+skip_single_source:
 	dev = bus_find_device(&coresight_bustype, NULL, &deactivate,
 			      coresight_enabled_sink);
 
@@ -768,10 +793,17 @@ int coresight_enable(struct coresight_device *csdev)
 	 * Search for a valid sink for this session but don't reset the
 	 * "enable_sink" flag in sysFS.  Users get to do that explicitly.
 	 */
-	sink = coresight_get_enabled_sink(false);
+	sink = coresight_get_enabled_sink(csdev, false);
 	if (!sink) {
 		ret = -EINVAL;
 		goto out;
+	}
+
+	if (!is_etm_sync_mode_hw()) {
+		/* Add reference to source
+		 * Used by sync insertion logic in ETR driver
+		 */
+		sink_ops(sink)->register_source(sink, csdev);
 	}
 
 	path = coresight_build_path(csdev, sink);
@@ -825,6 +857,7 @@ EXPORT_SYMBOL_GPL(coresight_enable);
 void coresight_disable(struct coresight_device *csdev)
 {
 	int cpu, ret;
+	struct coresight_device *sink;
 	struct list_head *path = NULL;
 
 	mutex_lock(&coresight_mutex);
@@ -849,6 +882,16 @@ void coresight_disable(struct coresight_device *csdev)
 	default:
 		/* We can't be here */
 		break;
+	}
+
+	if (!is_etm_sync_mode_hw()) {
+		sink = coresight_get_enabled_sink(csdev, false);
+		if (!sink)
+			goto out;
+		/* Remove source reference
+		 * Used by sync insertion logic in ETR driver
+		 */
+		sink_ops(sink)->unregister_source(csdev);
 	}
 
 	coresight_disable_path(path);

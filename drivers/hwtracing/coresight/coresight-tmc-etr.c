@@ -16,6 +16,7 @@
 #include <linux/vmalloc.h>
 #include "coresight-catu.h"
 #include "coresight-etm-perf.h"
+#include <linux/arm-smccc.h>
 #include "coresight-priv.h"
 #include "coresight-tmc.h"
 
@@ -107,6 +108,223 @@ struct etr_sg_table {
 	struct tmc_sg_table	*sg_table;
 	dma_addr_t		hwaddr;
 };
+
+/* SW mode sync insertion interval
+ *
+ * Sync insertion interval for 1M is based on assumption of
+ * trace data generated at  4bits/cycle ,cycle period of 0.4 ns
+ * and atleast 4 syncs per buffer wrap.
+ *
+ * One limitation of fixing only 4 syncs per buffer wrap is that
+ * we might loose 1/4 of the initial buffer data due to lack of sync.
+ * But on the other hand, we could reduce the sync insertion frequency
+ * by increasing the buffer size which seems to be a good compromise.
+ */
+#define SYNC_TICK_NS_PER_MB 200000 /* 200us */
+#define SYNCS_PER_FILL 4
+
+/* Global mode timer management */
+
+/**
+ * struct tmc_etr_tsync_global - Global mode timer
+ * @drvdata_cpumap:	cpu to tmc drvdata map
+ * @timer:		global timer shared by all cores
+ * @tick:		gloabl timer tick period
+ * @active_count:	timer reference count
+ */
+static struct tmc_etr_tsync_global {
+	struct tmc_drvdata *drvdata_cpumap[NR_CPUS];
+	struct hrtimer	timer;
+	int active_count;
+	u64 tick;
+} tmc_etr_tsync_global;
+
+/* Accessor functions for tsync global */
+void tmc_etr_add_cpumap(struct tmc_drvdata *drvdata)
+{
+	tmc_etr_tsync_global.drvdata_cpumap[drvdata->cpu] = drvdata;
+}
+
+static inline struct tmc_drvdata *cpu_to_tmcdrvdata(int cpu)
+{
+	return tmc_etr_tsync_global.drvdata_cpumap[cpu];
+}
+
+static inline struct hrtimer *tmc_etr_tsync_global_timer(void)
+{
+	return &tmc_etr_tsync_global.timer;
+}
+
+static inline void tmc_etr_tsync_global_tick(u64 tick)
+{
+	tmc_etr_tsync_global.tick = tick;
+}
+
+/* Refernence counting is assumed to be always called from
+ * an atomic context.
+ */
+static inline int tmc_etr_tsync_global_addref(void)
+{
+	return ++tmc_etr_tsync_global.active_count;
+}
+
+static inline int tmc_etr_tsync_global_delref(void)
+{
+	return --tmc_etr_tsync_global.active_count;
+}
+
+/* Sync insertion API */
+static void tmc_etr_insert_sync(struct tmc_drvdata *drvdata)
+{
+	struct coresight_device *sdev = drvdata->etm_source;
+	struct etr_tsync_data *syncd = &drvdata->tsync_data;
+	int err = 0, len;
+	u64 rwp;
+
+	/* We have three contenders for ETM control.
+	 * 1. User initiated ETM control
+	 * 2. Timer sync initiated ETM control
+	 * 3. No stop on flush initated ETM control
+	 * They all run in an atomic context and that too in
+	 * the same core. Either on a core in which ETM is associated
+	 * or in the primary core thereby mutually exclusive.
+	 *
+	 * To avoid any sync insertion while ETM is disabled by
+	 * user, we rely on the device hw_state.
+	 * Like for example, hrtimer being in active state even
+	 * after ETM is disabled by user.
+	 */
+	if (sdev->hw_state != USR_START)
+		return;
+
+	rwp = tmc_read_rwp(drvdata);
+	if (!syncd->prev_rwp)
+		goto sync_insert;
+
+	if (syncd->prev_rwp <= rwp) {
+		len = rwp - syncd->prev_rwp;
+	} else { /* Buffer wrapped */
+		goto sync_insert;
+	}
+
+	/* Check if we reached buffer threshold */
+	if (len < syncd->len_thold)
+		goto skip_insert;
+
+	/* Software based sync insertion procedure */
+sync_insert:
+	/* Disable source */
+	if (likely(sdev && source_ops(sdev)->disable_raw))
+		source_ops(sdev)->disable_raw(sdev);
+	else
+		err = -EINVAL;
+
+	/* Enable source */
+	if (likely(sdev && source_ops(sdev)->enable_raw))
+		source_ops(sdev)->enable_raw(sdev);
+	else
+		err = -EINVAL;
+
+	if (!err) {
+		/* Mark the write pointer of sync insertion */
+		syncd->prev_rwp = tmc_read_rwp(drvdata);
+	}
+
+skip_insert:
+	return;
+}
+
+/* Timer handler APIs */
+
+static enum hrtimer_restart tmc_etr_timer_handler_percore(struct hrtimer *t)
+{
+	struct tmc_drvdata *drvdata;
+
+	drvdata = container_of(t, struct tmc_drvdata, timer);
+	hrtimer_forward_now(t, ns_to_ktime(drvdata->tsync_data.tick));
+	tmc_etr_insert_sync(drvdata);
+	return HRTIMER_RESTART;
+}
+
+static enum hrtimer_restart tmc_etr_timer_handler_global(struct hrtimer *t)
+{
+	cpumask_t active_mask;
+	int cpu;
+
+	hrtimer_forward_now(t, ns_to_ktime(tmc_etr_tsync_global.tick));
+
+	active_mask = coresight_etm_active_list();
+	/* Run sync insertions for all active ETMs */
+	for_each_cpu(cpu, &active_mask)
+		tmc_etr_insert_sync(cpu_to_tmcdrvdata(cpu));
+
+	return HRTIMER_RESTART;
+}
+
+/* Timer setup API common for both global and per core mode
+ *
+ * Global mode: Timer gets started only if its not active already.
+ *		Number of users managed by reference counting.
+ * Percore mode: Timer gets started always
+ *
+ * Always executed in an atomic context either in IPI handler
+ * on a remote core or with irqs disabled in the local core
+ */
+static void tmc_etr_timer_setup(void *data)
+{
+	struct tmc_drvdata *drvdata = data;
+	struct hrtimer *timer;
+	bool mode_global;
+	u64 tick;
+
+	tick = drvdata->tsync_data.tick;
+	mode_global = is_etm_sync_mode_sw_global();
+	if (mode_global) {
+		if (tmc_etr_tsync_global_addref() == 1) {
+			/* Start only if we are the first user */
+			tmc_etr_tsync_global_tick(tick); /* Configure tick */
+		} else {
+			dev_dbg(&drvdata->csdev->dev, "global timer active already\n");
+			return;
+		}
+	}
+
+	timer = mode_global ?
+		tmc_etr_tsync_global_timer() : &drvdata->timer;
+	hrtimer_init(timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	timer->function = mode_global ?
+		tmc_etr_timer_handler_global : tmc_etr_timer_handler_percore;
+	dev_dbg(&drvdata->csdev->dev, "Starting sync timer, mode:%s period:%lld ns\n",
+		mode_global ? "global" : "percore", tick);
+	hrtimer_start(timer, ns_to_ktime(tick), HRTIMER_MODE_REL_PINNED);
+}
+
+/* Timer cancel API common for both global and per core mode
+ *
+ * Global mode: Timer gets cancelled only if there are no other users
+ * Percore mode: Timer gets cancelled always
+ *
+ * Always executed in an atomic context either in IPI handler
+ * on a remote core or with irqs disabled in the local core
+ */
+static void tmc_etr_timer_cancel(void *data)
+{
+	struct tmc_drvdata *drvdata = data;
+	struct hrtimer *timer;
+	bool mode_global;
+
+	mode_global = is_etm_sync_mode_sw_global();
+	if (mode_global) {
+		if (tmc_etr_tsync_global_delref() != 0) {
+			/* Nothing to do if we are not the last user */
+			return;
+		}
+	}
+
+	timer = mode_global ?
+		tmc_etr_tsync_global_timer() : &drvdata->timer;
+	hrtimer_cancel(timer);
+}
 
 /*
  * tmc_etr_sg_table_entries: Total number of table entries required to map
@@ -593,6 +811,9 @@ static int tmc_etr_alloc_flat_buf(struct tmc_drvdata *drvdata,
 {
 	struct etr_flat_buf *flat_buf;
 	struct device *real_dev = drvdata->csdev->dev.parent;
+	dma_addr_t s_paddr = 0;
+	int buff_sec_mapped = 0;
+	int ret;
 
 	/* We cannot reuse existing pages for flat buf */
 	if (pages)
@@ -609,12 +830,44 @@ static int tmc_etr_alloc_flat_buf(struct tmc_drvdata *drvdata,
 		return -ENOMEM;
 	}
 
+	if (!(drvdata->etr_options & CSETR_QUIRK_SECURE_BUFF))
+		goto skip_secure_buffer;
+
+	/* Register driver allocated dma buffer for necessary
+	 * mapping in the secure world
+	 */
+	if (tmc_register_drvbuf(drvdata, flat_buf->daddr, etr_buf->size)) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	buff_sec_mapped = 1;
+
+	/* Allocate secure trace buffer */
+	if (tmc_alloc_secbuf(drvdata, etr_buf->size, &s_paddr)) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+skip_secure_buffer:
 	flat_buf->size = etr_buf->size;
 	flat_buf->dev = &drvdata->csdev->dev;
 	etr_buf->hwaddr = flat_buf->daddr;
+	etr_buf->s_paddr= s_paddr;
 	etr_buf->mode = ETR_MODE_FLAT;
 	etr_buf->private = flat_buf;
 	return 0;
+
+err:
+	kfree(flat_buf);
+	dma_free_coherent(&drvdata->csdev->dev, etr_buf->size, flat_buf->vaddr,
+			  flat_buf->daddr);
+	if (buff_sec_mapped)
+		tmc_unregister_drvbuf(drvdata, flat_buf->daddr,
+				      etr_buf->size);
+	if (s_paddr)
+		tmc_free_secbuf(drvdata, s_paddr, etr_buf->size);
+
+	return ret;
 }
 
 static void tmc_etr_free_flat_buf(struct etr_buf *etr_buf)
@@ -955,10 +1208,17 @@ static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 
 	CS_UNLOCK(drvdata->base);
 
+	if (drvdata->etr_options & CSETR_QUIRK_RESET_CTL_REG)
+		tmc_disable_hw(drvdata);
+
 	/* Wait for TMCSReady bit to be set */
 	tmc_wait_for_tmcready(drvdata);
 
 	writel_relaxed(etr_buf->size / 4, drvdata->base + TMC_RSZ);
+	if (drvdata && CSETR_QUIRK_BUFFSIZE_8BX)
+		writel_relaxed(etr_buf->size / 8, drvdata->base + TMC_RSZ);
+	else
+		writel_relaxed(etr_buf->size / 4, drvdata->base + TMC_RSZ);
 	writel_relaxed(TMC_MODE_CIRCULAR_BUFFER, drvdata->base + TMC_MODE);
 
 	axictl = readl_relaxed(drvdata->base + TMC_AXICTL);
@@ -975,7 +1235,10 @@ static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 		axictl |= TMC_AXICTL_SCT_GAT_MODE;
 
 	writel_relaxed(axictl, drvdata->base + TMC_AXICTL);
-	tmc_write_dba(drvdata, etr_buf->hwaddr);
+	if (drvdata->etr_options & CSETR_QUIRK_SECURE_BUFF)
+		tmc_write_dba(drvdata, etr_buf->s_paddr);
+	else
+		tmc_write_dba(drvdata, etr_buf->hwaddr);
 	/*
 	 * If the TMC pointers must be programmed before the session,
 	 * we have to set it properly (i.e, RRP/RWP to base address and
@@ -983,7 +1246,10 @@ static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 	 */
 	if (tmc_etr_has_cap(drvdata, TMC_ETR_SAVE_RESTORE)) {
 		tmc_write_rrp(drvdata, etr_buf->hwaddr);
-		tmc_write_rwp(drvdata, etr_buf->hwaddr);
+		if (drvdata->etr_options & CSETR_QUIRK_SECURE_BUFF)
+			tmc_write_rwp(drvdata, etr_buf->s_paddr);
+		else
+			tmc_write_rwp(drvdata, etr_buf->hwaddr);
 		sts = readl_relaxed(drvdata->base + TMC_STS) & ~TMC_STS_FULL;
 		writel_relaxed(sts, drvdata->base + TMC_STS);
 	}
@@ -1127,6 +1393,20 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 	struct etr_buf *sysfs_buf = NULL, *new_buf = NULL, *free_buf = NULL;
 
+	if (!is_etm_sync_mode_hw()) {
+		/* Calculate parameters for sync insertion */
+		drvdata->tsync_data.len_thold =
+			drvdata->size / (SYNCS_PER_FILL);
+		drvdata->tsync_data.tick =
+			(drvdata->size / SZ_1M) * SYNC_TICK_NS_PER_MB;
+		drvdata->tsync_data.prev_rwp = 0;
+		if (!drvdata->tsync_data.tick) {
+			drvdata->tsync_data.tick = SYNC_TICK_NS_PER_MB;
+			dev_warn(&drvdata->csdev->dev,
+				 "Trace bufer size not sufficient, sync insertion can fail\n");
+		}
+	}
+
 	/*
 	 * If we are enabling the ETR from disabled state, we need to make
 	 * sure we have a buffer with the right size. The etr_buf is not reset
@@ -1174,6 +1454,9 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 		drvdata->sysfs_buf = new_buf;
 	}
 
+	if (drvdata->mode == CS_MODE_READ_PREVBOOT)
+		goto out;
+
 	ret = tmc_etr_enable_hw(drvdata, drvdata->sysfs_buf);
 	if (!ret) {
 		drvdata->mode = CS_MODE_SYSFS;
@@ -1182,6 +1465,10 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
+	if (!ret && !is_etm_sync_mode_hw() &&
+		(drvdata->mode != CS_MODE_READ_PREVBOOT))
+		smp_call_function_single(drvdata->rc_cpu, tmc_etr_timer_setup,
+					 drvdata, true);
 	/* Free memory outside the spinlock if need be */
 	if (free_buf)
 		tmc_etr_free_sysfs_buf(free_buf);
@@ -1653,8 +1940,26 @@ static int tmc_disable_etr_sink(struct coresight_device *csdev)
 
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
+	if (!is_etm_sync_mode_hw())
+		smp_call_function_single(drvdata->rc_cpu, tmc_etr_timer_cancel,
+					 drvdata, true);
+
 	dev_dbg(&csdev->dev, "TMC-ETR disabled\n");
 	return 0;
+}
+
+void tmc_register_source(struct coresight_device *csdev, void *source)
+{
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+
+	drvdata->etm_source = source;
+}
+
+void tmc_unregister_source(struct coresight_device *csdev)
+{
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+
+	drvdata->etm_source = NULL;
 }
 
 static const struct coresight_ops_sink tmc_etr_sink_ops = {
@@ -1663,11 +1968,38 @@ static const struct coresight_ops_sink tmc_etr_sink_ops = {
 	.alloc_buffer	= tmc_alloc_etr_buffer,
 	.update_buffer	= tmc_update_etr_buffer,
 	.free_buffer	= tmc_free_etr_buffer,
+	.register_source = tmc_register_source,
+	.unregister_source = tmc_unregister_source,
 };
 
 const struct coresight_ops tmc_etr_cs_ops = {
 	.sink_ops	= &tmc_etr_sink_ops,
 };
+
+
+/* APIs to manage ETM start/stop when ETR stop on flush is broken */
+
+void tmc_flushstop_etm_off(void *data)
+{
+	struct tmc_drvdata *drvdata = data;
+	struct coresight_device *sdev = drvdata->etm_source;
+
+	if (sdev->hw_state == USR_START) {
+		source_ops(sdev)->disable_raw(sdev);
+		sdev->hw_state = SW_STOP;
+	}
+}
+
+void tmc_flushstop_etm_on(void *data)
+{
+	struct tmc_drvdata *drvdata = data;
+	struct coresight_device *sdev = drvdata->etm_source;
+
+	if (sdev->hw_state == SW_STOP) { /* Restore the user configured state */
+		source_ops(sdev)->enable_raw(sdev);
+		sdev->hw_state = USR_START;
+	}
+}
 
 int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 {
@@ -1677,6 +2009,18 @@ int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 	/* config types are set a boot time and never change */
 	if (WARN_ON_ONCE(drvdata->config_type != TMC_CONFIG_TYPE_ETR))
 		return -EINVAL;
+
+	if (drvdata->mode == CS_MODE_READ_PREVBOOT) {
+		/* Initialize drvdata for reading trace data from last boot */
+		tmc_enable_etr_sink_sysfs(drvdata->csdev);
+		/* Update the buffer offset, len */
+		tmc_etr_sync_sysfs_buf(drvdata);
+		return 0;
+	}
+
+	if (drvdata->etr_options & CSETR_QUIRK_NO_STOP_FLUSH)
+		smp_call_function_single(drvdata->rc_cpu, tmc_flushstop_etm_off,
+					 drvdata, true);
 
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 	if (drvdata->reading) {
@@ -1701,6 +2045,13 @@ int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 	drvdata->reading = true;
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
+
+	if (ret && drvdata->etr_options & CSETR_QUIRK_NO_STOP_FLUSH) {
+		dev_warn(&drvdata->csdev->dev, "ETM wrongly stopped\n");
+		/* Restore back on error */
+		smp_call_function_single(drvdata->rc_cpu, tmc_flushstop_etm_on,
+					 drvdata, true);
+	}
 
 	return ret;
 }
@@ -1740,5 +2091,28 @@ int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata)
 	if (sysfs_buf)
 		tmc_etr_free_sysfs_buf(sysfs_buf);
 
+	return 0;
+}
+
+int tmc_copy_secure_buffer(struct tmc_drvdata *drvdata,
+					 char *bufp, size_t len)
+{
+	struct arm_smccc_res res;
+	uint64_t offset;
+	char *vaddr;
+	struct etr_buf *etr_buf = drvdata->etr_buf;
+
+	tmc_etr_buf_get_data(etr_buf, 0, 0, &vaddr);
+	offset = bufp - vaddr;
+
+	arm_smccc_smc(OCTEONTX_TRC_COPY_TO_DRVBUF, etr_buf->hwaddr + offset,
+		      etr_buf->s_paddr + offset, len, 0, 0, 0, 0, &res);
+	if (res.a0 != SMCCC_RET_SUCCESS)
+		return -EFAULT;
+
+	if ((drvdata->etr_options & CSETR_QUIRK_NO_STOP_FLUSH) &&
+	    (drvdata->mode == CS_MODE_SYSFS))
+		smp_call_function_single(drvdata->rc_cpu, tmc_flushstop_etm_on,
+					drvdata, true);
 	return 0;
 }

@@ -35,6 +35,7 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/of.h>
 #include <linux/acpi_iort.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
@@ -293,7 +294,10 @@ static int smmu_pmu_apply_event_filter(struct smmu_pmu *smmu_pmu,
 	idx = find_first_bit(smmu_pmu->used_counters, num_ctrs);
 	if (idx == num_ctrs ||
 	    smmu_pmu_check_global_filter(smmu_pmu->events[idx], event)) {
-		smmu_pmu_set_event_filter(event, 0, span, sid);
+		if (idx == 0)
+			smmu_pmu_set_event_filter(event, 0, span, sid);
+		else
+			smmu_pmu_set_event_filter(event, idx, 0, 0);
 		return 0;
 	}
 
@@ -854,9 +858,16 @@ static void smmu_pmu_shutdown(struct platform_device *pdev)
 	smmu_pmu_disable(&smmu_pmu->pmu);
 }
 
+static const struct of_device_id smmu_pmu_of_match[] = {
+	{ .compatible = "arm,smmu-pmu-v3", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, smmu_pmu_of_match);
+
 static struct platform_driver smmu_pmu_driver = {
 	.driver = {
 		.name = "arm-smmu-v3-pmcg",
+		.of_match_table	= of_match_ptr(smmu_pmu_of_match),
 	},
 	.probe = smmu_pmu_probe,
 	.remove = smmu_pmu_remove,
