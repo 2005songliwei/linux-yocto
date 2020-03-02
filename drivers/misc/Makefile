@@ -59,3 +59,4 @@ obj-$(CONFIG_HABANA_AI)		+= habanalabs/
 obj-$(CONFIG_XILINX_SDFEC)	+= xilinx_sdfec.o
 obj-$(CONFIG_MISC_RTSX)		+= cardreader/
 obj-$(CONFIG_MARVELL_OTX_BPHY_CTR)	+= otx_bphy_ctr.o
+obj-$(CONFIG_MARVELL_LOKI)	+= mrvl-loki.o
