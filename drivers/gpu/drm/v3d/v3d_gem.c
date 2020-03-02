@@ -10,6 +10,7 @@
 #include <linux/reset.h>
 #include <linux/sched/signal.h>
 #include <linux/uaccess.h>
+#include <linux/clk.h>
 
 #include <drm/drm_syncobj.h>
 #include <uapi/drm/v3d_drm.h>
@@ -17,6 +18,47 @@
 #include "v3d_drv.h"
 #include "v3d_regs.h"
 #include "v3d_trace.h"
+
+static void
+v3d_clock_down_work(struct work_struct *work)
+{
+	struct v3d_dev *v3d =
+		container_of(work, struct v3d_dev, clk_down_work.work);
+	int ret;
+
+	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
+	v3d->clk_up = false;
+	WARN_ON_ONCE(ret != 0);
+}
+
+static void
+v3d_clock_up_get(struct v3d_dev *v3d)
+{
+	mutex_lock(&v3d->clk_lock);
+	if (v3d->clk_refcount++ == 0) {
+		cancel_delayed_work_sync(&v3d->clk_down_work);
+		if (!v3d->clk_up)  {
+			int ret;
+
+			ret = clk_set_rate(v3d->clk, v3d->clk_up_rate);
+			WARN_ON_ONCE(ret != 0);
+			v3d->clk_up = true;
+		}
+	}
+	mutex_unlock(&v3d->clk_lock);
+}
+
+static void
+v3d_clock_up_put(struct v3d_dev *v3d)
+{
+	mutex_lock(&v3d->clk_lock);
+	if (--v3d->clk_refcount == 0) {
+		schedule_delayed_work(&v3d->clk_down_work,
+				      msecs_to_jiffies(100));
+	}
+	mutex_unlock(&v3d->clk_lock);
+}
+
 
 static void
 v3d_init_core(struct v3d_dev *v3d, int core)
@@ -354,6 +396,7 @@ v3d_job_free(struct kref *ref)
 	struct v3d_job *job = container_of(ref, struct v3d_job, refcount);
 	unsigned long index;
 	struct dma_fence *fence;
+	struct v3d_dev *v3d = job->v3d;
 	int i;
 
 	for (i = 0; i < job->bo_count; i++) {
@@ -367,11 +410,7 @@ v3d_job_free(struct kref *ref)
 	}
 	xa_destroy(&job->deps);
 
-	dma_fence_put(job->irq_fence);
-	dma_fence_put(job->done_fence);
-
-	pm_runtime_mark_last_busy(job->v3d->dev);
-	pm_runtime_put_autosuspend(job->v3d->dev);
+	v3d_clock_up_put(v3d);
 
 	kfree(job);
 }
@@ -439,10 +478,6 @@ v3d_job_init(struct v3d_dev *v3d, struct drm_file *file_priv,
 	job->v3d = v3d;
 	job->free = free;
 
-	ret = pm_runtime_get_sync(v3d->dev);
-	if (ret < 0)
-		return ret;
-
 	xa_init_flags(&job->deps, XA_FLAGS_ALLOC);
 
 	ret = drm_syncobj_find_fence(file_priv, in_sync, 0, 0, &in_fence);
@@ -453,12 +488,12 @@ v3d_job_init(struct v3d_dev *v3d, struct drm_file *file_priv,
 	if (ret)
 		goto fail;
 
+	v3d_clock_up_get(v3d);
 	kref_init(&job->refcount);
 
 	return 0;
 fail:
 	xa_destroy(&job->deps);
-	pm_runtime_put_autosuspend(v3d->dev);
 	return ret;
 }
 
@@ -530,13 +565,16 @@ v3d_submit_cl_ioctl(struct drm_device *dev, void *data,
 	struct drm_v3d_submit_cl *args = data;
 	struct v3d_bin_job *bin = NULL;
 	struct v3d_render_job *render;
+	struct v3d_job *clean_job = NULL;
+	struct v3d_job *last_job;
 	struct ww_acquire_ctx acquire_ctx;
 	int ret = 0;
 
 	trace_v3d_submit_cl_ioctl(&v3d->drm, args->rcl_start, args->rcl_end);
 
-	if (args->pad != 0) {
-		DRM_INFO("pad must be zero: %d\n", args->pad);
+	if (args->flags != 0 &&
+	    args->flags != DRM_V3D_SUBMIT_CL_FLUSH_CACHE) {
+		DRM_INFO("invalid flags: %d\n", args->flags);
 		return -EINVAL;
 	}
 
@@ -578,12 +616,31 @@ v3d_submit_cl_ioctl(struct drm_device *dev, void *data,
 		bin->render = render;
 	}
 
-	ret = v3d_lookup_bos(dev, file_priv, &render->base,
+	if (args->flags & DRM_V3D_SUBMIT_CL_FLUSH_CACHE) {
+		clean_job = kcalloc(1, sizeof(*clean_job), GFP_KERNEL);
+		if (!clean_job) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+
+		ret = v3d_job_init(v3d, file_priv, clean_job, v3d_job_free, 0);
+		if (ret) {
+			kfree(clean_job);
+			clean_job = NULL;
+			goto fail;
+		}
+
+		last_job = clean_job;
+	} else {
+		last_job = &render->base;
+	}
+
+	ret = v3d_lookup_bos(dev, file_priv, last_job,
 			     args->bo_handles, args->bo_handle_count);
 	if (ret)
 		goto fail;
 
-	ret = v3d_lock_bo_reservations(&render->base, &acquire_ctx);
+	ret = v3d_lock_bo_reservations(last_job, &acquire_ctx);
 	if (ret)
 		goto fail;
 
@@ -602,17 +659,29 @@ v3d_submit_cl_ioctl(struct drm_device *dev, void *data,
 	ret = v3d_push_job(v3d_priv, &render->base, V3D_RENDER);
 	if (ret)
 		goto fail_unreserve;
+
+	if (clean_job) {
+		ret = drm_gem_fence_array_add(&clean_job->deps,
+					      dma_fence_get(render->base.done_fence));
+		if (ret)
+			goto fail_unreserve;
+		ret = v3d_push_job(v3d_priv, clean_job, V3D_CACHE_CLEAN);
+		if (ret)
+			goto fail_unreserve;
+	}
 	mutex_unlock(&v3d->sched_lock);
 
 	v3d_attach_fences_and_unlock_reservation(file_priv,
-						 &render->base,
+						 last_job,
 						 &acquire_ctx,
 						 args->out_sync,
-						 render->base.done_fence);
+						 last_job->done_fence);
 
 	if (bin)
 		v3d_job_put(&bin->base);
 	v3d_job_put(&render->base);
+	if (clean_job)
+		v3d_job_put(clean_job);
 
 	return 0;
 
@@ -624,6 +693,8 @@ fail:
 	if (bin)
 		v3d_job_put(&bin->base);
 	v3d_job_put(&render->base);
+	if (clean_job)
+		v3d_job_put(clean_job);
 
 	return ret;
 }
@@ -840,6 +911,9 @@ v3d_gem_init(struct drm_device *dev)
 	mutex_init(&v3d->reset_lock);
 	mutex_init(&v3d->sched_lock);
 	mutex_init(&v3d->cache_clean_lock);
+
+	mutex_init(&v3d->clk_lock);
+	INIT_DELAYED_WORK(&v3d->clk_down_work, v3d_clock_down_work);
 
 	/* Note: We don't allocate address 0.  Various bits of HW
 	 * treat 0 as special, such as the occlusion query counters
