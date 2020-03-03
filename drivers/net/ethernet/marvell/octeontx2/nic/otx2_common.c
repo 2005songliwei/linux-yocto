@@ -396,6 +396,8 @@ void otx2_config_irq_coalescing(struct otx2_nic *pfvf, int qidx)
 		     (pfvf->hw.cq_ecount_wait - 1));
 }
 
+#define OTX2_POOL_PAGE_MAX_REF	32768
+
 dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 			   gfp_t gfp)
 {
@@ -404,11 +406,11 @@ dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 	/* Check if request can be accommodated in previous allocated page */
 	if (pool->page && ((pool->page_offset + pool->rbsize) <=
 	    (PAGE_SIZE << pool->rbpage_order))) {
-		pool->pageref++;
+		pool->pageref--;
+		BUG_ON(!pool->pageref);
 		goto ret;
-	}
-
-	otx2_get_page(pool);
+	} else if (pool->page)
+		page_ref_sub(pool->page, pool->pageref);
 
 	/* Allocate a new page */
 	pool->page = alloc_pages(gfp | __GFP_COMP | __GFP_NOWARN,
@@ -416,6 +418,8 @@ dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 	if (unlikely(!pool->page))
 		return -ENOMEM;
 
+	page_ref_add(pool->page, OTX2_POOL_PAGE_MAX_REF);
+	pool->pageref = OTX2_POOL_PAGE_MAX_REF;
 	pool->page_offset = 0;
 ret:
 	iova = (u64)otx2_dma_map_page(pfvf, pool->page, pool->page_offset,
@@ -1180,7 +1184,6 @@ int otx2_sq_aura_pool_init(struct otx2_nic *pfvf)
 			otx2_aura_freeptr(pfvf, pool_id, bufptr);
 			sq->sqb_ptrs[sq->sqb_count++] = (u64)bufptr;
 		}
-		otx2_get_page(pool);
 	}
 
 	return 0;
@@ -1232,7 +1235,6 @@ int otx2_rq_aura_pool_init(struct otx2_nic *pfvf)
 			otx2_aura_freeptr(pfvf, pool_id,
 					  bufptr + OTX2_HEAD_ROOM);
 		}
-		otx2_get_page(pool);
 	}
 
 	return 0;

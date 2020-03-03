@@ -525,18 +525,6 @@ static inline void otx2_aura_freeptr(struct otx2_nic *pfvf,
 		      otx2_get_regaddr(pfvf, NPA_LF_AURA_OP_FREE0));
 }
 
-/* Update page ref count */
-static inline void otx2_get_page(struct otx2_pool *pool)
-{
-	if (!pool->page)
-		return;
-
-	if (pool->pageref)
-		page_ref_add(pool->page, pool->pageref);
-	pool->pageref = 0;
-	pool->page = NULL;
-}
-
 static inline int otx2_get_pool_idx(struct otx2_nic *pfvf, int type, int idx)
 {
 	if (type == AURA_NIX_SQ)
