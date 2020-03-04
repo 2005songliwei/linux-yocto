@@ -597,8 +597,7 @@ out_free_state:
 	return ret;
 }
 
-int rescan_partitions(struct gendisk *disk, struct block_device *bdev,
-		bool invalidate)
+int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 {
 	int ret;
 
@@ -607,27 +606,38 @@ rescan:
 	if (ret)
 		return ret;
 
-	if (invalidate)
-		set_capacity(disk, 0);
-	else if (disk->fops->revalidate_disk)
+	if (disk->fops->revalidate_disk)
 		disk->fops->revalidate_disk(disk);
-
-	check_disk_size_change(disk, bdev, !invalidate);
+	check_disk_size_change(disk, bdev, true);
 	bdev->bd_invalidated = 0;
 
-	if (!get_capacity(disk)) {
-		/*
-		 * Tell userspace that the media / partition table may have
-		 * changed.
-		 */
-		kobject_uevent(&disk_to_dev(disk)->kobj, KOBJ_CHANGE);
+	if (!get_capacity(disk))
 		return 0;
-	}
 
 	ret = blk_add_partitions(disk, bdev);
 	if (ret == -EAGAIN)
 		goto rescan;
 	return ret;
+}
+
+int invalidate_partitions(struct gendisk *disk, struct block_device *bdev)
+{
+	int res;
+
+	if (!bdev->bd_invalidated)
+		return 0;
+
+	res = drop_partitions(disk, bdev);
+	if (res)
+		return res;
+
+	set_capacity(disk, 0);
+	check_disk_size_change(disk, bdev, false);
+	bdev->bd_invalidated = 0;
+	/* tell userspace that the media / partition table may have changed */
+	kobject_uevent(&disk_to_dev(disk)->kobj, KOBJ_CHANGE);
+
+	return 0;
 }
 
 unsigned char *read_dev_sector(struct block_device *bdev, sector_t n, Sector *p)

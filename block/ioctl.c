@@ -203,7 +203,7 @@ int __blkdev_reread_part(struct block_device *bdev)
 
 	lockdep_assert_held(&bdev->bd_mutex);
 
-	return rescan_partitions(disk, bdev, false);
+	return rescan_partitions(disk, bdev);
 }
 EXPORT_SYMBOL(__blkdev_reread_part);
 
