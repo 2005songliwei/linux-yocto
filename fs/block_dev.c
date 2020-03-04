@@ -1513,8 +1513,6 @@ int bdev_disk_changed(struct block_device *bdev, bool invalidate)
 	struct gendisk *disk = bdev->bd_disk;
 	int ret;
 
-	lockdep_assert_held(&bdev->bd_mutex);
-
 rescan:
 	ret = blk_drop_partitions(disk, bdev);
 	if (ret)
@@ -1542,11 +1540,6 @@ rescan:
 
 	return ret;
 }
-/*
- * Only exported for for loop and dasd for historic reasons.  Don't use in new
- * code!
- */
-EXPORT_SYMBOL_GPL(bdev_disk_changed);
 
 /*
  * bd_mutex locking:
