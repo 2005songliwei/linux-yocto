@@ -292,6 +292,9 @@ PHONY += $(BOOT_TARGETS1) $(BOOT_TARGETS2)
 
 boot := arch/$(ARCH)/boot
 
+# These targets cannot be built in parallel
+.NOTPARALLEL: $(BOOT_TARGETS)
+
 $(BOOT_TARGETS1): vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(patsubst %,$(boot)/%,$@)
 $(BOOT_TARGETS2): vmlinux
@@ -417,7 +420,10 @@ endif
 archclean:
 	$(Q)$(MAKE) $(clean)=$(boot)
 
-archprepare: checkbin
+arch/powerpc/lib/crtsavres.o: arch/powerpc/lib/crtsavres.S
+	$(Q)$(MAKE) $(build)=arch/powerpc/lib arch/powerpc/lib/crtsavres.o
+
+archprepare: checkbin arch/powerpc/lib/crtsavres.o
 
 archheaders:
 	$(Q)$(MAKE) $(build)=arch/powerpc/kernel/syscalls all
