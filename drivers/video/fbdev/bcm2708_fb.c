@@ -197,32 +197,18 @@ static int bcm2708_fb_debugfs_init(struct bcm2708_fb *fb)
 	fbdev->dma_stats.regset.nregs = ARRAY_SIZE(stats_registers);
 	fbdev->dma_stats.regset.base = &fbdev->dma_stats;
 
-	if (!debugfs_create_regset32("dma_stats", 0444, fb->debugfs_subdir,
-				     &fbdev->dma_stats.regset)) {
-		dev_warn(fb->fb.dev, "%s: could not create statistics registers\n",
-			 __func__);
-		goto fail;
-	}
-
+	debugfs_create_regset32("dma_stats", 0444, fb->debugfs_subdir,
+				     &fbdev->dma_stats.regset);
 	fb->screeninfo_regset.regs = screeninfo;
 	fb->screeninfo_regset.nregs = ARRAY_SIZE(screeninfo);
 	fb->screeninfo_regset.base = &fb->fb.var;
 
-	if (!debugfs_create_regset32("screeninfo", 0444, fb->debugfs_subdir,
-				     &fb->screeninfo_regset)) {
-		dev_warn(fb->fb.dev,
-			 "%s: could not create dimensions registers\n",
-			 __func__);
-		goto fail;
-	}
+	debugfs_create_regset32("screeninfo", 0444, fb->debugfs_subdir,
+				     &fb->screeninfo_regset);
 
 	fbdev->instance_count++;
 
 	return 0;
-
-fail:
-	bcm2708_fb_debugfs_deinit(fb);
-	return -EFAULT;
 }
 
 static void set_display_num(struct bcm2708_fb *fb)
