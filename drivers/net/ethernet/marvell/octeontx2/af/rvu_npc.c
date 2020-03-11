@@ -11,6 +11,8 @@
 #include <linux/bitfield.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/firmware.h>
+#include <linux/stddef.h>
 
 #include "rvu_struct.h"
 #include "rvu_reg.h"
@@ -26,12 +28,12 @@
 #define NIXLF_BCAST_ENTRY	1
 #define NIXLF_PROMISC_ENTRY	2
 
-#define NPC_PARSE_RESULT_DMAC_OFFSET	8
-
 #define NPC_KEX_CHAN_MASK	0xFFFULL
 #define NPC_KEX_PF_FUNC_MASK    0xFFFFULL
 
 #define NPC_HW_TSTAMP_OFFSET	8
+
+static const char def_pfl_name[] = "default";
 
 static void npc_mcam_free_all_entries(struct rvu *rvu, struct npc_mcam *mcam,
 				      int blkaddr, u16 pcifunc);
@@ -573,7 +575,7 @@ void rvu_npc_install_promisc_entry(struct rvu *rvu, u16 pcifunc,
 	entry.kw_mask[0] = 0xFFFULL;
 
 	if (allmulti) {
-		kwi = NPC_PARSE_RESULT_DMAC_OFFSET / sizeof(u64);
+		kwi = NPC_KEXOF_DMAC / sizeof(u64);
 		entry.kw[kwi] = BIT_ULL(40); /* LSB bit of 1st byte in DMAC */
 		entry.kw_mask[kwi] = BIT_ULL(40);
 	}
@@ -885,179 +887,6 @@ void rvu_npc_free_mcam_entries(struct rvu *rvu, u16 pcifunc, int nixlf)
 	rvu_write64(rvu, blkaddr,			\
 		NPC_AF_INTFX_LDATAX_FLAGSX_CFG(intf, ld, flags), cfg)
 
-#define KEX_LD_CFG(bytesm1, hdr_ofs, ena, flags_ena, key_ofs)		\
-			(((bytesm1) << 16) | ((hdr_ofs) << 8) | ((ena) << 7) | \
-			 ((flags_ena) << 6) | ((key_ofs) & 0x3F))
-
-static void npc_config_tx_ldata_extract(struct rvu *rvu, int blkaddr)
-{
-	u64 cfg;
-
-	/* Default TX MCAM KEX profile */
-	/* Layer A: Ethernet: */
-
-	/* PF_FUNC: 2B , KW0 [47:32] */
-	cfg = KEX_LD_CFG(0x01, 0x0, 0x1, 0x0, 0x4);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LA, NPC_LT_LA_IH_NIX_ETHER, 0, cfg);
-
-	/* PF_FUNC incase of higig2 */
-	cfg = KEX_LD_CFG(0x01, 0x0, 0x1, 0x0, 0x4);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LA, NPC_LT_LA_IH_NIX_HIGIG2_ETHER, 0,
-		   cfg);
-
-	/* Layer B: Single VLAN (CTAG) */
-	/* CTAG VLAN[2..3] KW0[63:48] */
-	cfg = KEX_LD_CFG(0x01, 0x2, 0x1, 0x0, 0x6);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LB, NPC_LT_LB_CTAG, 0, cfg);
-
-	/* CTAG VLAN[2..3] KW1[15:0] */
-	cfg = KEX_LD_CFG(0x01, 0x4, 0x1, 0x0, 0x8);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LB, NPC_LT_LB_CTAG, 1, cfg);
-
-	/* Layer B: Stacked VLAN (STAG|QinQ) */
-	/* Outer VLAN: 2 bytes, KW0[63:48] */
-	cfg = KEX_LD_CFG(0x01, 0x2, 0x1, 0x0, 0x6);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LB, NPC_LT_LB_STAG_QINQ, 0, cfg);
-
-	/* Outer VLAN: 2 Bytes, KW1[15:0] */
-	cfg = KEX_LD_CFG(0x01, 0x8, 0x1, 0x0, 0x8);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LB, NPC_LT_LB_STAG_QINQ, 1, cfg);
-
-	/* DMAC: 6 bytes, KW1[63:16] */
-	cfg = KEX_LD_CFG(0x05, 0x8, 0x1, 0x0, 0xa);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LA, NPC_LT_LA_IH_NIX_ETHER, 1, cfg);
-
-	/* clasification in higig2 header */
-	cfg = KEX_LD_CFG(0x01, 0x10, 0x1, 0x0, 0xa);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LA, NPC_LT_LA_IH_NIX_HIGIG2_ETHER, 1,
-		   cfg);
-
-	/* Layer C: IPv4 */
-	/* SIP+DIP: 8 bytes, KW2[63:0] */
-	cfg = KEX_LD_CFG(0x07, 0xc, 0x1, 0x0, 0x10);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LC, NPC_LT_LC_IP, 0, cfg);
-
-	/* Layer D:UDP */
-	/* SPORT: 2 bytes, KW3[15:0] */
-	cfg = KEX_LD_CFG(0x1, 0x0, 0x1, 0x0, 0x18);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LD, NPC_LT_LD_UDP, 0, cfg);
-
-	/* DPORT: 2 bytes, KW3[31:16] */
-	cfg = KEX_LD_CFG(0x1, 0x2, 0x1, 0x0, 0x1a);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LD, NPC_LT_LD_UDP, 1, cfg);
-
-	/* Layer D:TCP */
-	/* SPORT: 2 bytes, KW3[15:0] */
-	cfg = KEX_LD_CFG(0x1, 0x0, 0x1, 0x0, 0x18);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LD, NPC_LT_LD_TCP, 0, cfg);
-
-	/* DPORT: 2 bytes, KW3[31:16] */
-	cfg = KEX_LD_CFG(0x1, 0x2, 0x1, 0x0, 0x1a);
-	SET_KEX_LD(NIX_INTF_TX, NPC_LID_LD, NPC_LT_LD_TCP, 1, cfg);
-}
-
-static void npc_config_rx_ldata_extract(struct rvu *rvu, int blkaddr)
-{
-	u64 cfg;
-
-	/* Default RX MCAM KEX profile */
-	/* Layer A: Ethernet: */
-
-	/* DMAC: 6 bytes, KW1[47:0] */
-	cfg = KEX_LD_CFG(0x05, 0x0, 0x1, 0x0, NPC_PARSE_RESULT_DMAC_OFFSET);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LA, NPC_LT_LA_ETHER, 0, cfg);
-
-	/* Ethertype: 2 bytes, KW0[47:32] */
-	cfg = KEX_LD_CFG(0x01, 0xc, 0x1, 0x0, 0x4);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LA, NPC_LT_LA_ETHER, 1, cfg);
-
-	/* Classification in higig2 header */
-	cfg = KEX_LD_CFG(0x01, 0x8, 0x1, 0x0, NPC_PARSE_RESULT_DMAC_OFFSET);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LA, NPC_LT_LA_HIGIG2_ETHER, 0, cfg);
-
-	/* Vid in higig2 header */
-	cfg = KEX_LD_CFG(0x01, 0xc, 0x1, 0x0, NPC_PARSE_RESULT_DMAC_OFFSET + 2);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LA, NPC_LT_LA_HIGIG2_ETHER, 1, cfg);
-
-	/* Layer B: Single VLAN (CTAG) */
-	/* CTAG VLAN[2..3] + Ethertype, 4 bytes, KW0[63:32] */
-	cfg = KEX_LD_CFG(0x03, 0x2, 0x1, 0x0, 0x4);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LB, NPC_LT_LB_CTAG, 0, cfg);
-
-	/* Layer B: Stacked VLAN (STAG|QinQ) */
-	/* Outer VLAN: 2 bytes, KW0[63:48] */
-	cfg = KEX_LD_CFG(0x01, 0x2, 0x1, 0x0, 0x6);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LB, NPC_LT_LB_STAG_QINQ, 0, cfg);
-
-	/* Ethertype: 2 bytes, KW0[47:32] */
-	cfg = KEX_LD_CFG(0x01, 0x8, 0x1, 0x0, 0x4);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LB, NPC_LT_LB_STAG_QINQ, 1, cfg);
-
-	/* Layer C: IPv4 */
-	/* SIP+DIP: 8 bytes, KW2[63:0] */
-	cfg = KEX_LD_CFG(0x07, 0xc, 0x1, 0x0, 0x10);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LC, NPC_LT_LC_IP, 0, cfg);
-	/* TOS: 1 byte, KW1[63:56] */
-
-	cfg = KEX_LD_CFG(0x0, 0x1, 0x1, 0x0, 0xf);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LC, NPC_LT_LC_IP, 1, cfg);
-
-	/* Layer D:UDP */
-	/* SPORT: 2 bytes, KW3[15:0] */
-	cfg = KEX_LD_CFG(0x1, 0x0, 0x1, 0x0, 0x18);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LD, NPC_LT_LD_UDP, 0, cfg);
-
-	/* DPORT: 2 bytes, KW3[31:16] */
-	cfg = KEX_LD_CFG(0x1, 0x2, 0x1, 0x0, 0x1a);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LD, NPC_LT_LD_UDP, 1, cfg);
-
-	/* Layer D:TCP */
-	/* SPORT: 2 bytes, KW3[15:0] */
-	cfg = KEX_LD_CFG(0x1, 0x0, 0x1, 0x0, 0x18);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LD, NPC_LT_LD_TCP, 0, cfg);
-
-	/* DPORT: 2 bytes, KW3[31:16] */
-	cfg = KEX_LD_CFG(0x1, 0x2, 0x1, 0x0, 0x1a);
-	SET_KEX_LD(NIX_INTF_RX, NPC_LID_LD, NPC_LT_LD_TCP, 1, cfg);
-}
-
-static void npc_config_ldata_extract(struct rvu *rvu, int blkaddr)
-{
-	int lid, ltype;
-	int lid_count;
-	u64 cfg;
-
-	cfg = rvu_read64(rvu, blkaddr, NPC_AF_CONST);
-	lid_count = (cfg >> 4) & 0xF;
-
-	/* First clear any existing config i.e
-	 * disable LDATA and FLAGS extraction.
-	 */
-	for (lid = 0; lid < lid_count; lid++) {
-		for (ltype = 0; ltype < 16; ltype++) {
-			SET_KEX_LD(NIX_INTF_RX, lid, ltype, 0, 0ULL);
-			SET_KEX_LD(NIX_INTF_RX, lid, ltype, 1, 0ULL);
-			SET_KEX_LD(NIX_INTF_TX, lid, ltype, 0, 0ULL);
-			SET_KEX_LD(NIX_INTF_TX, lid, ltype, 1, 0ULL);
-
-			SET_KEX_LDFLAGS(NIX_INTF_RX, 0, ltype, 0ULL);
-			SET_KEX_LDFLAGS(NIX_INTF_RX, 1, ltype, 0ULL);
-			SET_KEX_LDFLAGS(NIX_INTF_TX, 0, ltype, 0ULL);
-			SET_KEX_LDFLAGS(NIX_INTF_TX, 1, ltype, 0ULL);
-		}
-	}
-
-	cfg = (rvu_read64(rvu, blkaddr, NPC_AF_INTFX_KEX_CFG(0)) >> 32) & 0x07;
-	/* Default profile works with key size NPC_MCAM_KEY_X2 */
-	if (cfg != NPC_MCAM_KEY_X2)
-		return;
-
-	/* Config RX ldata extract */
-	npc_config_rx_ldata_extract(rvu, blkaddr);
-	/* Config TX ldata extract */
-	npc_config_tx_ldata_extract(rvu, blkaddr);
-}
-
 static void npc_program_mkex_profile(struct rvu *rvu, int blkaddr,
 				     struct npc_mcam_kex *mkex)
 {
@@ -1100,33 +929,38 @@ static void npc_program_mkex_profile(struct rvu *rvu, int blkaddr,
 }
 
 /* strtoull of "mkexprof" with base:36 */
-#define MKEX_SIGN      0x19bbfdbd15f
 #define MKEX_END_SIGN  0xdeadbeef
 
-static void npc_load_mkex_profile(struct rvu *rvu, int blkaddr)
+static void npc_load_mkex_profile(struct rvu *rvu, int blkaddr,
+				  const char *mkex_profile)
 {
-	const char *mkex_profile = rvu->mkex_pfl_name;
 	struct device *dev = &rvu->pdev->dev;
 	void __iomem *mkex_prfl_addr = NULL;
 	struct npc_mcam_kex *mcam_kex;
 	u64 prfl_addr;
 	u64 prfl_sz;
 
+	/* Order of precedence (high to low):
+	 * 1. Embedded in custom KPU profile firmware via kpu_profile param.
+	 * 2. Via mkex_profile, loaded from ATF if KPU profile wasn't loaded.
+	 * 3. Built-in KEX profile from npc_mkex_default.
+	 */
 	/* If user not selected mkex profile */
-	if (!strncmp(mkex_profile, "default", MKEX_NAME_LEN))
-		goto load_default;
+	if (rvu->kpu_fwdata_sz ||
+	    !strncmp(mkex_profile, def_pfl_name, MKEX_NAME_LEN))
+		goto program_mkex;
 
 	if (!rvu->fwdata)
-		goto load_default;
+		goto program_mkex;
 	prfl_addr = rvu->fwdata->mcam_addr;
 	prfl_sz = rvu->fwdata->mcam_sz;
 
 	if (!prfl_addr || !prfl_sz)
-		goto load_default;
+		goto program_mkex;
 
 	mkex_prfl_addr = ioremap_wc(prfl_addr, prfl_sz);
 	if (!mkex_prfl_addr)
-		goto load_default;
+		goto program_mkex;
 
 	mcam_kex = (struct npc_mcam_kex *)mkex_prfl_addr;
 
@@ -1134,27 +968,21 @@ static void npc_load_mkex_profile(struct rvu *rvu, int blkaddr)
 		/* Compare with mkex mod_param name string */
 		if (mcam_kex->mkex_sign == MKEX_SIGN &&
 		    !strncmp(mcam_kex->name, mkex_profile, MKEX_NAME_LEN)) {
+			/* If profile is valid, switch to it. */
 			if (!is_parse_nibble_config_valid(rvu, mcam_kex))
-				goto load_default;
-
-			/* Program selected mkex profile */
-			npc_program_mkex_profile(rvu, blkaddr, mcam_kex);
-
-			goto unmap;
+				rvu->kpu.mkex = mcam_kex;
+			goto program_mkex;
 		}
 
 		mcam_kex++;
 		prfl_sz -= sizeof(struct npc_mcam_kex);
 	}
-	dev_warn(dev, "Failed to load requested profile: %s\n",
-		 rvu->mkex_pfl_name);
+	dev_warn(dev, "Failed to load requested profile: %s\n", mkex_profile);
 
-load_default:
-	dev_info(rvu->dev, "Using default mkex profile\n");
-	/* Config packet data and flags extraction into PARSE result */
-	npc_config_ldata_extract(rvu, blkaddr);
-
-unmap:
+program_mkex:
+	dev_info(rvu->dev, "Using %s mkex profile\n", rvu->kpu.mkex->name);
+	/* Program selected mkex profile */
+	npc_program_mkex_profile(rvu, blkaddr, rvu->kpu.mkex);
 	if (mkex_prfl_addr)
 		iounmap(mkex_prfl_addr);
 }
@@ -1233,6 +1061,7 @@ static void npc_program_kpu_profile(struct rvu *rvu, int blkaddr, int kpu,
 				    struct npc_kpu_profile *profile)
 {
 	int entry, num_entries, max_entries;
+	u64 entry_mask;
 
 	if (profile->cam_entries != profile->action_entries) {
 		dev_err(rvu->dev,
@@ -1256,8 +1085,12 @@ static void npc_program_kpu_profile(struct rvu *rvu, int blkaddr, int kpu,
 
 	/* Enable all programmed entries */
 	num_entries = min_t(int, profile->action_entries, profile->cam_entries);
+	entry_mask = enable_mask(num_entries);
+	/* Disable first KPU_MAX_CST_ENT entries for built-in profile */
+	if (!rvu->kpu.custom)
+		entry_mask |= GENMASK_ULL(KPU_MAX_CST_ENT - 1, 0);
 	rvu_write64(rvu, blkaddr,
-		    NPC_AF_KPUX_ENTRY_DISX(kpu, 0), enable_mask(num_entries));
+		    NPC_AF_KPUX_ENTRY_DISX(kpu, 0), entry_mask);
 	if (num_entries > 64) {
 		rvu_write64(rvu, blkaddr,
 			    NPC_AF_KPUX_ENTRY_DISX(kpu, 1),
@@ -1266,6 +1099,140 @@ static void npc_program_kpu_profile(struct rvu *rvu, int blkaddr, int kpu,
 
 	/* Enable this KPU */
 	rvu_write64(rvu, blkaddr, NPC_AF_KPUX_CFG(kpu), 0x01);
+}
+
+static int npc_prepare_default_kpu(struct npc_kpu_profile_adapter *profile)
+{
+	profile->custom = 0;
+	profile->name = def_pfl_name;
+	profile->version = NPC_KPU_PROFILE_VER;
+	profile->ikpu = ikpu_action_entries;
+	profile->pkinds = ARRAY_SIZE(ikpu_action_entries);
+	profile->kpu = npc_kpu_profiles;
+	profile->kpus = ARRAY_SIZE(npc_kpu_profiles);
+	profile->lt_def = &npc_lt_defaults;
+	profile->mkex = &npc_mkex_default;
+
+	return 0;
+}
+
+static int npc_apply_custom_kpu(struct rvu *rvu,
+				struct npc_kpu_profile_adapter *profile)
+{
+	size_t hdr_sz = sizeof(struct npc_kpu_profile_fwdata), offset = 0;
+	struct npc_kpu_profile_fwdata *fw = rvu->kpu_fwdata;
+	struct npc_kpu_profile_action *action;
+	struct npc_kpu_profile_cam *cam;
+	struct npc_kpu_fwdata *fw_kpu;
+	int entries;
+	u16 kpu, entry;
+
+	if (rvu->kpu_fwdata_sz < hdr_sz) {
+		dev_warn(rvu->dev, "Invalid KPU profile size\n");
+		return -EINVAL;
+	}
+	if (le64_to_cpu(fw->signature) != KPU_SIGN) {
+		dev_warn(rvu->dev, "Invalid KPU profile signature %llx\n",
+			 fw->signature);
+		return -EINVAL;
+	}
+	profile->custom = 1;
+	profile->name = fw->name;
+	profile->version = le64_to_cpu(fw->version);
+	profile->mkex = &fw->mkex;
+
+	/* Verify if the using known profile structure */
+	if (NPC_KPU_VER_MAJ(profile->version) >
+	    NPC_KPU_VER_MAJ(NPC_KPU_PROFILE_VER)) {
+		dev_warn(rvu->dev, "Not supported Major version: %d > %d\n",
+			 NPC_KPU_VER_MAJ(profile->version),
+			 NPC_KPU_VER_MAJ(NPC_KPU_PROFILE_VER));
+		return -EINVAL;
+	}
+	/* Verify if profile fits the HW */
+	if (fw->kpus > profile->kpus) {
+		dev_warn(rvu->dev, "Not enough KPUs: %d > %ld\n", fw->kpus,
+			 profile->kpus);
+		return -EINVAL;
+	}
+	/* Update adapter structure and ensure endianness where needed. */
+	profile->lt_def = &fw->lt_def;
+
+	for (kpu = 0; kpu < fw->kpus; kpu++) {
+		fw_kpu = (struct npc_kpu_fwdata *)(fw->data + offset);
+		if (fw_kpu->entries > KPU_MAX_CST_ENT)
+			dev_warn(rvu->dev,
+				 "Too many custom entries on KPU%d: %d > %d\n",
+				 kpu, fw_kpu->entries, KPU_MAX_CST_ENT);
+		entries = min(fw_kpu->entries, KPU_MAX_CST_ENT);
+		cam = (struct npc_kpu_profile_cam *)fw_kpu->data;
+		offset += sizeof(*fw_kpu) + fw_kpu->entries * sizeof(*cam);
+		action = (struct npc_kpu_profile_action *)(fw->data + offset);
+		offset += fw_kpu->entries * sizeof(*action);
+		if (rvu->kpu_fwdata_sz < hdr_sz + offset) {
+			dev_warn(rvu->dev,
+				 "Profile size mismatch on KPU%i parsing.\n",
+				 kpu + 1);
+			return -EINVAL;
+		}
+		/* Fix endianness and update */
+		for (entry = 0; entry < entries; entry++) {
+			cam[entry].dp0 = le16_to_cpu(cam[entry].dp0);
+			cam[entry].dp0_mask = le16_to_cpu(cam[entry].dp0_mask);
+			cam[entry].dp1 = le16_to_cpu(cam[entry].dp1);
+			cam[entry].dp1_mask = le16_to_cpu(cam[entry].dp1_mask);
+			cam[entry].dp2 = le16_to_cpu(cam[entry].dp2);
+			cam[entry].dp2_mask = le16_to_cpu(cam[entry].dp2_mask);
+			profile->kpu[kpu].cam[entry] = cam[entry];
+			profile->kpu[kpu].action[entry] = action[entry];
+		}
+	}
+
+	return 0;
+}
+
+static void npc_load_kpu_profile(struct rvu *rvu)
+{
+	struct npc_kpu_profile_adapter *profile = &rvu->kpu;
+	const char *kpu_profile = rvu->kpu_pfl_name;
+	const struct firmware *fw = NULL;
+
+	/* If user not specified profile customization */
+	if (!strncmp(kpu_profile, def_pfl_name, KPU_NAME_LEN))
+		goto revert_to_default;
+	/* First prepare default KPU, then we'll customize top entries. */
+	npc_prepare_default_kpu(profile);
+
+	dev_info(rvu->dev, "Loading KPU profile from firmware: %s\n",
+		 kpu_profile);
+	if (!request_firmware(&fw, kpu_profile, rvu->dev)) {
+		rvu->kpu_fwdata = kzalloc(fw->size, GFP_KERNEL);
+		if (rvu->kpu_fwdata) {
+			memcpy(rvu->kpu_fwdata, fw->data, fw->size);
+			rvu->kpu_fwdata_sz = fw->size;
+		}
+	}
+	release_firmware(fw);
+
+	/* Apply profile customization if firmware was loaded. */
+	if (!rvu->kpu_fwdata_sz || npc_apply_custom_kpu(rvu, profile)) {
+		dev_warn(rvu->dev,
+			 "Can't load KPU profile %s. Using default.\n",
+			 kpu_profile);
+		kfree(rvu->kpu_fwdata);
+		rvu->kpu_fwdata = NULL;
+		goto revert_to_default;
+	}
+
+	dev_info(rvu->dev, "Using custom profile '%s', version %d.%d.%d\n",
+		 profile->name, NPC_KPU_VER_MAJ(profile->version),
+		 NPC_KPU_VER_MIN(profile->version),
+		 NPC_KPU_VER_PATCH(profile->version));
+
+	return;
+
+revert_to_default:
+	npc_prepare_default_kpu(profile);
 }
 
 static void npc_parser_profile_init(struct rvu *rvu, int blkaddr)
@@ -1286,25 +1253,28 @@ static void npc_parser_profile_init(struct rvu *rvu, int blkaddr)
 		rvu_write64(rvu, blkaddr, NPC_AF_KPUX_CFG(idx), 0x00);
 	}
 
+	/* Load and customize KPU profile. */
+	npc_load_kpu_profile(rvu);
+
 	/* First program IKPU profile i.e PKIND configs.
 	 * Check HW max count to avoid configuring junk or
 	 * writing to unsupported CSR addresses.
 	 */
 	pkind = &hw->pkind;
-	num_pkinds = ARRAY_SIZE(ikpu_action_entries);
+	num_pkinds = rvu->kpu.pkinds;
 	num_pkinds = min_t(int, pkind->rsrc.max, num_pkinds);
 
 	for (idx = 0; idx < num_pkinds; idx++)
 		npc_config_kpuaction(rvu, blkaddr,
-				     &ikpu_action_entries[idx], 0, idx, true);
+				     &rvu->kpu.ikpu[idx], 0, idx, true);
 
 	/* Program KPU CAM and Action profiles */
-	num_kpus = ARRAY_SIZE(npc_kpu_profiles);
+	num_kpus = rvu->kpu.kpus;
 	num_kpus = min_t(int, hw->npc_kpus, num_kpus);
 
 	for (idx = 0; idx < num_kpus; idx++)
 		npc_program_kpu_profile(rvu, blkaddr,
-					idx, &npc_kpu_profiles[idx]);
+					idx, &rvu->kpu.kpu[idx]);
 }
 
 static int npc_mcam_rsrcs_init(struct rvu *rvu, int blkaddr)
@@ -1429,11 +1399,11 @@ free_mem:
 
 int rvu_npc_init(struct rvu *rvu)
 {
+	struct npc_kpu_profile_adapter *kpu = &rvu->kpu;
 	struct npc_pkind *pkind = &rvu->hw->pkind;
 	struct npc_mcam *mcam = &rvu->hw->mcam;
-	u64 keyz = NPC_MCAM_KEY_X2;
+	u64 cfg, nibble_ena, rx_kex, tx_kex;
 	int blkaddr, entry, bank, err;
-	u64 cfg, nibble_ena;
 
 	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NPC, 0);
 	if (blkaddr < 0) {
@@ -1467,13 +1437,19 @@ int rvu_npc_init(struct rvu *rvu)
 
 	/* Config Outer L2, IPv4's NPC layer info */
 	rvu_write64(rvu, blkaddr, NPC_AF_PCK_DEF_OL2,
-		    (NPC_LID_LA << 8) | (NPC_LT_LA_ETHER << 4) | 0x0F);
+		    (kpu->lt_def->pck_ol2.lid << 8) |
+		    (kpu->lt_def->pck_ol2.ltype_match << 4) |
+		    kpu->lt_def->pck_ol2.ltype_mask);
 	rvu_write64(rvu, blkaddr, NPC_AF_PCK_DEF_OIP4,
-		    (NPC_LID_LC << 8) | (NPC_LT_LC_IP << 4) | 0x0F);
+		    (kpu->lt_def->pck_oip4.lid << 8) |
+		    (kpu->lt_def->pck_oip4.ltype_match << 4) |
+		    kpu->lt_def->pck_oip4.ltype_mask);
 
 	/* Config Inner IPV4 NPC layer info */
 	rvu_write64(rvu, blkaddr, NPC_AF_PCK_DEF_IIP4,
-		    (NPC_LID_LG << 8) | (NPC_LT_LG_TU_IP << 4) | 0x0F);
+		    (kpu->lt_def->pck_iip4.lid << 8) |
+		    (kpu->lt_def->pck_iip4.ltype_match << 4) |
+		    kpu->lt_def->pck_iip4.ltype_mask);
 
 	/* Enable below for Rx pkts.
 	 * - Outer IPv4 header checksum validation.
@@ -1490,19 +1466,22 @@ int rvu_npc_init(struct rvu *rvu)
 	/* Set RX and TX side MCAM search key size.
 	 * LA..LE (ltype only) + Channel
 	 */
-	nibble_ena = 0x249207;
-	rvu_write64(rvu, blkaddr, NPC_AF_INTFX_KEX_CFG(NIX_INTF_RX),
-			((keyz & 0x3) << 32) | nibble_ena);
+	rx_kex = npc_mkex_default.keyx_cfg[NIX_INTF_RX];
+	tx_kex = npc_mkex_default.keyx_cfg[NIX_INTF_TX];
+	nibble_ena = FIELD_GET(NPC_PARSE_NIBBLE, rx_kex);
+	rvu_write64(rvu, blkaddr, NPC_AF_INTFX_KEX_CFG(NIX_INTF_RX), rx_kex);
 
 	/* Extract Ltypes LID_LA to LID_LE */
 	nibble_ena = rvu_npc_get_tx_nibble_cfg(rvu, nibble_ena);
-	if (!nibble_ena)
-		nibble_ena = 0x249200;
-	rvu_write64(rvu, blkaddr, NPC_AF_INTFX_KEX_CFG(NIX_INTF_TX),
-			((keyz & 0x3) << 32) | nibble_ena);
+	if (nibble_ena) {
+		tx_kex &= ~NPC_PARSE_NIBBLE;
+		tx_kex |= FIELD_PREP(NPC_PARSE_NIBBLE, nibble_ena);
+		npc_mkex_default.keyx_cfg[NIX_INTF_TX] = tx_kex;
+	}
+	rvu_write64(rvu, blkaddr, NPC_AF_INTFX_KEX_CFG(NIX_INTF_TX), tx_kex);
 
 	/* Configure MKEX profile */
-	npc_load_mkex_profile(rvu, blkaddr);
+	npc_load_mkex_profile(rvu, blkaddr, rvu->mkex_pfl_name);
 
 	err = npc_mcam_rsrcs_init(rvu, blkaddr);
 	if (err)
@@ -1512,7 +1491,7 @@ int rvu_npc_init(struct rvu *rvu)
 	if (err) {
 		dev_err(rvu->dev,
 			"Incorrect mkex profile loaded using default mkex\n");
-		npc_config_ldata_extract(rvu, blkaddr);
+		npc_load_mkex_profile(rvu, blkaddr, def_pfl_name);
 	}
 
 	/* Set TX miss action to UCAST_DEFAULT i.e
@@ -1538,6 +1517,7 @@ void rvu_npc_freemem(struct rvu *rvu)
 
 	kfree(pkind->rsrc.bmap);
 	kfree(mcam->counters.bmap);
+	kfree(rvu->kpu_fwdata);
 	mutex_destroy(&mcam->lock);
 }
 
@@ -2681,14 +2661,10 @@ int rvu_mbox_handler_npc_set_pkind(struct rvu *rvu,
 	}
 
 	if (req->dir & PKIND_TX) {
-		blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, req->hdr.pcifunc);
-
-		/* tx pkind set req valid if NIXLF attached */
-		if (!pfvf->nixlf || blkaddr < 0)
-			return NIX_AF_ERR_AF_LF_INVALID;
-
-		nixlf = rvu_get_lf(rvu, &rvu->hw->block[blkaddr],
-				   req->hdr.pcifunc, 0);
+		/* Tx pkind set request valid if PCIFUNC has NIXLF attached */
+		rc = nix_get_nixlf(rvu, req->hdr.pcifunc, &nixlf, &blkaddr);
+		if (rc)
+			return rc;
 
 		rvu_write64(rvu, blkaddr, NIX_AF_LFX_TX_PARSE_CFG(nixlf),
 			    txpkind);

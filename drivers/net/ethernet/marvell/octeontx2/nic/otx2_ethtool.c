@@ -380,6 +380,9 @@ static void otx2_get_pauseparam(struct net_device *netdev,
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 	struct cgx_pause_frm_cfg *req, *rsp;
 
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return;
+
 	req = otx2_mbox_alloc_msg_cgx_cfg_pause_frm(&pfvf->mbox);
 	if (!req)
 		return;
@@ -398,6 +401,9 @@ static int otx2_set_pauseparam(struct net_device *netdev,
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 
 	if (pause->autoneg)
+		return -EOPNOTSUPP;
+
+	if (is_otx2_lbkvf(pfvf->pdev))
 		return -EOPNOTSUPP;
 
 	if (pause->rx_pause)
@@ -923,7 +929,8 @@ static int otx2_set_rxfh(struct net_device *dev, const u32 *indir,
 		otx2_set_rss_key(pfvf);
 	}
 
-	otx2_set_rss_table(pfvf);
+	if (netif_running(dev))
+		otx2_set_rss_table(pfvf);
 	return 0;
 }
 

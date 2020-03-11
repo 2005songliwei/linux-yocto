@@ -57,6 +57,10 @@ static char *mkex_profile; /* MKEX profile name */
 module_param(mkex_profile, charp, 0000);
 MODULE_PARM_DESC(mkex_profile, "MKEX profile name string");
 
+static char *kpu_profile; /* KPU profile name */
+module_param(kpu_profile, charp, 0000);
+MODULE_PARM_DESC(kpu_profile, "KPU profile name string");
+
 static void rvu_setup_hw_capabilities(struct rvu *rvu)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
@@ -90,13 +94,15 @@ int rvu_poll_reg(struct rvu *rvu, u64 block, u64 offset, u64 mask, bool zero)
 	u64 reg_val;
 
 	reg = rvu->afreg_base + ((block << 28) | offset);
-	while (time_before(jiffies, timeout)) {
-		reg_val = readq(reg);
-		if (zero && !(reg_val & mask))
-			return 0;
-		if (!zero && (reg_val & mask))
-			return 0;
+again:
+	reg_val = readq(reg);
+	if (zero && !(reg_val & mask))
+		return 0;
+	if (!zero && (reg_val & mask))
+		return 0;
+	if (time_before(jiffies, timeout)) {
 		usleep_range(1, 5);
+		goto again;
 	}
 	return -EBUSY;
 }
@@ -941,44 +947,51 @@ init:
 
 	err = rvu_npc_init(rvu);
 	if (err)
-		goto fwdata_err;
+		goto npc_err;
 
 	err = rvu_cgx_init(rvu);
 	if (err)
-		goto fwdata_err;
+		goto cgx_err;
 
 	/* Assign MACs for CGX mapped functions */
 	rvu_setup_pfvf_macaddress(rvu);
 
 	err = rvu_npa_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto npa_err;
 
 	err = rvu_nix_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto nix_err;
 
 	err = rvu_sso_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto sso_err;
 
 	err = rvu_tim_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto sso_err;
 
 	err = rvu_cpt_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto sso_err;
 
 	err = rvu_sdp_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto sso_err;
 
 	return 0;
 
+sso_err:
+	rvu_sso_freemem(rvu);
+nix_err:
+	rvu_nix_freemem(rvu);
+npa_err:
+	rvu_npa_freemem(rvu);
 cgx_err:
 	rvu_cgx_exit(rvu);
-fwdata_err:
+npc_err:
+	rvu_npc_freemem(rvu);
 	rvu_fwdata_exit(rvu);
 msix_err:
 	rvu_reset_msix(rvu);
@@ -2749,6 +2762,8 @@ static void rvu_update_module_params(struct rvu *rvu)
 
 	strscpy(rvu->mkex_pfl_name,
 		mkex_profile ? mkex_profile : default_pfl_name, MKEX_NAME_LEN);
+	strscpy(rvu->kpu_pfl_name,
+		kpu_profile ? kpu_profile : default_pfl_name, KPU_NAME_LEN);
 }
 
 static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)

@@ -15,6 +15,7 @@
 #include "rvu_struct.h"
 #include "common.h"
 #include "mbox.h"
+#include "npc.h"
 #include "rvu_validation.h"
 
 /* PCI device IDs */
@@ -207,6 +208,21 @@ struct npc_mcam {
 	u64	tx_features;
 	u64	rx_features;
 	struct list_head mcam_rules;
+};
+
+/* KPU profile adapter structure which is used to translate between built-in and
+ * firmware KPU profile structures.
+ */
+struct npc_kpu_profile_adapter {
+	const char		*name;
+	u64			version;
+	struct npc_lt_def_cfg	*lt_def;
+	struct npc_kpu_profile_action	*ikpu; /* array[pkinds] */
+	struct npc_kpu_profile	*kpu; /* array[kpus] */
+	struct npc_mcam_kex	*mkex;
+	bool			custom; /* true if loadable profile used */
+	size_t			pkinds;
+	size_t			kpus;
 };
 
 struct sso_rsrc {
@@ -448,9 +464,15 @@ struct rvu {
 	struct mutex		cgx_cfg_lock; /* serialize cgx configuration */
 
 	char mkex_pfl_name[MKEX_NAME_LEN]; /* Configured MKEX profile name */
+	char kpu_pfl_name[KPU_NAME_LEN]; /* Configured KPU profile name */
 
 	/* Firmware data */
 	struct rvu_fwdata	*fwdata;
+	void			*kpu_fwdata;
+	size_t			kpu_fwdata_sz;
+
+	/* NPC KPU data */
+	struct npc_kpu_profile_adapter kpu;
 
 	struct ptp		*ptp;
 
@@ -626,7 +648,7 @@ int rvu_nix_reserve_mark_format(struct rvu *rvu, struct nix_hw *nix_hw,
 void rvu_nix_freemem(struct rvu *rvu);
 int rvu_get_nixlf_count(struct rvu *rvu);
 void rvu_nix_lf_teardown(struct rvu *rvu, u16 pcifunc, int blkaddr, int npalf);
-int nix_get_nixlf(struct rvu *rvu, u16 pcifunc, int *nixlf);
+int nix_get_nixlf(struct rvu *rvu, u16 pcifunc, int *nixlf, int *nix_blkaddr);
 int rvu_nix_register_interrupts(struct rvu *rvu);
 void rvu_nix_unregister_interrupts(struct rvu *rvu);
 void rvu_nix_reset_mac(struct rvu_pfvf *pfvf, int pcifunc);
