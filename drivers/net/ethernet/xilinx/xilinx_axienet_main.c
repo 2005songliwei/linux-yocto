@@ -2974,6 +2974,10 @@ static int axienet_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev,
 				"unable to get Tx Timestamp resource\n");
+	} else {
+		lp->phy_mode = of_get_phy_mode(pdev->dev.of_node);
+		if ((int)lp->phy_mode < 0) {
+			ret = -EINVAL;
 			goto free_netdev;
 		}
 
