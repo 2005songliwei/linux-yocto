@@ -640,9 +640,7 @@ static void loop_reread_partitions(struct loop_device *lo,
 {
 	int rc;
 
-	mutex_lock(&bdev->bd_mutex);
-	rc = bdev_disk_changed(bdev, false);
-	mutex_unlock(&bdev->bd_mutex);
+	rc = blkdev_reread_part(bdev);
 	if (rc)
 		pr_warn("%s: partition scan of loop%d (%s) failed (rc=%d)\n",
 			__func__, lo->lo_number, lo->lo_file_name, rc);
@@ -1166,11 +1164,10 @@ out_unlock:
 		 * must be at least one and it can only become zero when the
 		 * current holder is released.
 		 */
-		if (!release)
-			mutex_lock(&bdev->bd_mutex);
-		err = bdev_disk_changed(bdev, false);
-		if (!release)
-			mutex_unlock(&bdev->bd_mutex);
+		if (release)
+			err = __blkdev_reread_part(bdev);
+		else
+			err = blkdev_reread_part(bdev);
 		if (err)
 			pr_warn("%s: partition scan of loop%d failed (rc=%d)\n",
 				__func__, lo_number, err);
