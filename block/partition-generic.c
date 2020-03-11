@@ -460,14 +460,12 @@ static bool disk_unlock_native_capacity(struct gendisk *disk)
 	}
 }
 
-int blk_drop_partitions(struct gendisk *disk, struct block_device *bdev)
+static int drop_partitions(struct gendisk *disk, struct block_device *bdev)
 {
 	struct disk_part_iter piter;
 	struct hd_struct *part;
 	int res;
 
-	if (!disk_part_scan_enabled(disk))
-		return 0;
 	if (bdev->bd_part_count || bdev->bd_super)
 		return -EBUSY;
 	res = invalidate_partition(disk, 0);
@@ -532,13 +530,10 @@ static bool blk_add_partition(struct gendisk *disk, struct block_device *bdev,
 	return true;
 }
 
-int blk_add_partitions(struct gendisk *disk, struct block_device *bdev)
+static int blk_add_partitions(struct gendisk *disk, struct block_device *bdev)
 {
 	struct parsed_partitions *state;
 	int ret = -EAGAIN, p, highest;
-
-	if (!disk_part_scan_enabled(disk))
-		return 0;
 
 	state = check_partition(disk, bdev);
 	if (!state)
@@ -600,6 +595,49 @@ int blk_add_partitions(struct gendisk *disk, struct block_device *bdev)
 out_free_state:
 	free_partitions(state);
 	return ret;
+}
+
+int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
+{
+	int ret;
+
+rescan:
+	ret = drop_partitions(disk, bdev);
+	if (ret)
+		return ret;
+
+	if (disk->fops->revalidate_disk)
+		disk->fops->revalidate_disk(disk);
+	check_disk_size_change(disk, bdev, true);
+	bdev->bd_invalidated = 0;
+
+	if (!get_capacity(disk))
+		return 0;
+
+	ret = blk_add_partitions(disk, bdev);
+	if (ret == -EAGAIN)
+		goto rescan;
+	return ret;
+}
+
+int invalidate_partitions(struct gendisk *disk, struct block_device *bdev)
+{
+	int res;
+
+	if (!bdev->bd_invalidated)
+		return 0;
+
+	res = drop_partitions(disk, bdev);
+	if (res)
+		return res;
+
+	set_capacity(disk, 0);
+	check_disk_size_change(disk, bdev, false);
+	bdev->bd_invalidated = 0;
+	/* tell userspace that the media / partition table may have changed */
+	kobject_uevent(&disk_to_dev(disk)->kobj, KOBJ_CHANGE);
+
+	return 0;
 }
 
 unsigned char *read_dev_sector(struct block_device *bdev, sector_t n, Sector *p)
