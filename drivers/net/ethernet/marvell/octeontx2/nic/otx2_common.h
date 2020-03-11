@@ -13,6 +13,7 @@
 
 #include <linux/pci.h>
 #include <linux/iommu.h>
+#include <linux/ptp_clock_kernel.h>
 
 #include <mbox.h>
 #include "otx2_reg.h"
@@ -20,6 +21,8 @@
 
 /* PCI device IDs */
 #define PCI_DEVID_OCTEONTX2_RVU_PF              0xA063
+#define PCI_DEVID_OCTEONTX2_RVU_VF		0xA064
+#define PCI_DEVID_OCTEONTX2_RVU_AFVF		0xA0F8
 
 #define PCI_SUBSYS_DEVID_96XX_RVU_PFVF		0xB200
 
@@ -189,6 +192,8 @@ struct otx2_hw {
 	struct otx2_drv_stats	drv_stats;
 	u64			cgx_rx_stats[CGX_RX_STATS_COUNT];
 	u64			cgx_tx_stats[CGX_TX_STATS_COUNT];
+	u64			cgx_fec_corr_blks;
+	u64			cgx_fec_uncorr_blks;
 };
 
 struct refill_work {
@@ -196,14 +201,71 @@ struct refill_work {
 	struct otx2_nic *pf;
 };
 
+struct otx2_ptp {
+	struct ptp_clock_info ptp_info;
+	struct ptp_clock *ptp_clock;
+	struct otx2_nic *nic;
+
+	struct cyclecounter cycle_counter;
+	struct timecounter time_counter;
+	bool ptp_en;
+};
+
+struct otx2_vf_config {
+	struct otx2_nic *pf;
+	struct delayed_work link_event_work;
+	struct delayed_work ptp_info_work;
+	bool intf_down; /* interface was either configured or not */
+	u8 mac[ETH_ALEN];
+	u16 vlan;
+	int tx_vtag_idx;
+};
+
+struct flr_work {
+	struct work_struct work;
+	struct otx2_nic *pf;
+};
+
+struct otx2_mac_table {
+	u8 addr[ETH_ALEN];
+	u16 mcam_entry;
+	bool inuse;
+};
+
+struct otx2_flow_config {
+	u16			entry[NPC_MAX_NONCONTIG_ENTRIES];
+	u32			nr_flows;
+	u32			vf_vlan_offset;
+	u32			ntuple_offset;
+	u32			unicast_offset;
+	u32			rx_vlan_offset;
+#define OTX2_PER_VF_VLAN_FLOWS	2 /* rx+tx per VF */
+#define OTX2_VF_VLAN_RX_INDEX	0
+#define OTX2_VF_VLAN_TX_INDEX	1
+	u32                     ntuple_max_flows;
+	struct list_head	flow_list;
+};
+
 struct otx2_nic {
 	void __iomem		*reg_base;
 	struct net_device	*netdev;
 	void			*iommu_domain;
+	u16			iommu_domain_type;
 	u16			max_frs;
+	u16			xtra_hdr;
 	u16			rbsize; /* Receive buffer size */
 
+#define OTX2_FLAG_RX_TSTAMP_ENABLED		BIT_ULL(0)
+#define OTX2_FLAG_TX_TSTAMP_ENABLED		BIT_ULL(1)
 #define OTX2_FLAG_INTF_DOWN			BIT_ULL(2)
+#define OTX2_FLAG_MCAM_ENTRIES_ALLOC		BIT_ULL(3)
+#define OTX2_FLAG_NTUPLE_SUPPORT		BIT_ULL(4)
+#define OTX2_FLAG_UCAST_FLTR_SUPPORT		BIT_ULL(5)
+#define OTX2_FLAG_RX_VLAN_SUPPORT		BIT_ULL(6)
+#define OTX2_FLAG_VF_VLAN_SUPPORT		BIT_ULL(7)
+#define OTX2_FLAG_PF_SHUTDOWN			BIT_ULL(8)
+#define OTX2_FLAG_RX_PAUSE_ENABLED		BIT_ULL(9)
+#define OTX2_FLAG_TX_PAUSE_ENABLED		BIT_ULL(10)
 	u64			flags;
 
 	struct otx2_qset	qset;
@@ -213,9 +275,14 @@ struct otx2_nic {
 
 	/* Mbox */
 	struct mbox		mbox;
+	struct mbox		*mbox_pfvf;
 	struct workqueue_struct *mbox_wq;
+	struct workqueue_struct *mbox_pfvf_wq;
 
+	u16			bpid[NIX_MAX_BPID_CHAN];
 	u16			pcifunc; /* RVU PF_FUNC */
+	u8			total_vfs;
+	struct otx2_vf_config	*vf_configs;
 	struct cgx_link_user_info linfo;
 
 	u64			reset_count;
@@ -227,12 +294,50 @@ struct otx2_nic {
 
 	/* Block address of NIX either BLKADDR_NIX0 or BLKADDR_NIX1 */
 	int			nix_blkaddr;
+
+	bool			entries_alloc;
+	struct otx2_flow_config	*flow_cfg;
+	struct workqueue_struct	*flr_wq;
+	struct flr_work		*flr_wrk;
+
+	u8			hw_rx_tstamp;
+	u8			hw_tx_tstamp;
+	struct otx2_ptp		*ptp;
+	struct otx2_mac_table	*mac_table;
+	struct workqueue_struct	*otx2_ndo_wq;
+	struct work_struct	otx2_rx_mode_work;
+
+#define OTX2_PRIV_FLAG_PAM4			BIT(0)
+#define OTX2_PRIV_FLAG_EDSA_HDR			BIT(1)
+#define OTX2_PRIV_FLAG_HIGIG2_HDR		BIT(2)
+#define OTX2_IS_EDSA_ENABLED(flags)		((flags) &              \
+						 OTX2_PRIV_FLAG_EDSA_HDR)
+#define OTX2_IS_HIGIG2_ENABLED(flags)		((flags) &              \
+						 OTX2_PRIV_FLAG_HIGIG2_HDR)
+	u32		        ethtool_flags;
+
+	/* extended DSA and EDSA  header lengths are 8/16 bytes
+	 * so take max length 16 bytes here
+	 */
+#define OTX2_EDSA_HDR_LEN			16
+#define OTX2_HIGIG2_HDR_LEN			16
+#define OTX2_HW_TIMESTAMP_LEN			8
+	u32			addl_mtu;
 };
+
+static inline bool is_otx2_lbkvf(struct pci_dev *pdev)
+{
+	return pdev->device == PCI_DEVID_OCTEONTX2_RVU_AFVF;
+}
+
+static inline bool is_dev_post_96xx_C0(struct pci_dev *pdev)
+{
+	return (pdev->revision == 0x08) || (pdev->revision == 0x30);
+}
 
 static inline bool is_96xx_A0(struct pci_dev *pdev)
 {
-	return (pdev->revision == 0x00) &&
-		(pdev->subsystem_device == PCI_SUBSYS_DEVID_96XX_RVU_PFVF);
+	return (pdev->revision == 0x00);
 }
 
 static inline bool is_96xx_B0(struct pci_dev *pdev)
@@ -420,18 +525,6 @@ static inline void otx2_aura_freeptr(struct otx2_nic *pfvf,
 		      otx2_get_regaddr(pfvf, NPA_LF_AURA_OP_FREE0));
 }
 
-/* Update page ref count */
-static inline void otx2_get_page(struct otx2_pool *pool)
-{
-	if (!pool->page)
-		return;
-
-	if (pool->pageref)
-		page_ref_add(pool->page, pool->pageref);
-	pool->pageref = 0;
-	pool->page = NULL;
-}
-
 static inline int otx2_get_pool_idx(struct otx2_nic *pfvf, int type, int idx)
 {
 	if (type == AURA_NIX_SQ)
@@ -535,6 +628,9 @@ static inline dma_addr_t otx2_dma_map_page(struct otx2_nic *pfvf,
 {
 	dma_addr_t iova;
 
+	if (pfvf->iommu_domain_type == IOMMU_DOMAIN_IDENTITY)
+		return page_to_phys(page) + offset;
+
 	iova = dma_map_page_attrs(pfvf->dev, page,
 				  offset, size, dir, DMA_ATTR_SKIP_CPU_SYNC);
 	if (unlikely(dma_mapping_error(pfvf->dev, iova)))
@@ -546,6 +642,9 @@ static inline void otx2_dma_unmap_page(struct otx2_nic *pfvf,
 				       dma_addr_t addr, size_t size,
 				       enum dma_data_direction dir)
 {
+	if (pfvf->iommu_domain_type == IOMMU_DOMAIN_IDENTITY)
+		return;
+
 	dma_unmap_page_attrs(pfvf->dev, addr, size,
 			     dir, DMA_ATTR_SKIP_CPU_SYNC);
 }
@@ -558,6 +657,7 @@ int otx2_hw_set_mtu(struct otx2_nic *pfvf, int mtu);
 void otx2_tx_timeout(struct net_device *netdev, unsigned int txq);
 void otx2_get_mac_from_af(struct net_device *netdev);
 void otx2_config_irq_coalescing(struct otx2_nic *pfvf, int qidx);
+int otx2_config_pause_frm(struct otx2_nic *pfvf);
 
 /* RVU block related APIs */
 int otx2_attach_npa_nix(struct otx2_nic *pfvf);
@@ -578,6 +678,7 @@ dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 			   gfp_t gfp);
 int otx2_rxtx_enable(struct otx2_nic *pfvf, bool enable);
 void otx2_ctx_disable(struct mbox *mbox, int type, bool npa);
+int otx2_nix_config_bp(struct otx2_nic *pfvf, bool enable);
 void otx2_cleanup_rx_cqes(struct otx2_nic *pfvf, struct otx2_cq_queue *cq);
 void otx2_cleanup_tx_cqes(struct otx2_nic *pfvf, struct otx2_cq_queue *cq);
 
@@ -598,18 +699,53 @@ void mbox_handler_nix_txsch_alloc(struct otx2_nic *pf,
 				  struct nix_txsch_alloc_rsp *rsp);
 void mbox_handler_cgx_stats(struct otx2_nic *pfvf,
 			    struct cgx_stats_rsp *rsp);
+void mbox_handler_cgx_fec_stats(struct otx2_nic *pfvf,
+				struct cgx_fec_stats_rsp *rsp);
+void otx2_set_fec_stats_count(struct otx2_nic *pfvf);
+void mbox_handler_nix_bp_enable(struct otx2_nic *pfvf,
+				struct nix_bp_cfg_rsp *rsp);
 
 /* Device stats APIs */
 void otx2_get_dev_stats(struct otx2_nic *pfvf);
 void otx2_get_stats64(struct net_device *netdev,
 		      struct rtnl_link_stats64 *stats);
 void otx2_update_lmac_stats(struct otx2_nic *pfvf);
+void otx2_update_lmac_fec_stats(struct otx2_nic *pfvf);
 int otx2_update_rq_stats(struct otx2_nic *pfvf, int qidx);
 int otx2_update_sq_stats(struct otx2_nic *pfvf, int qidx);
 void otx2_set_ethtool_ops(struct net_device *netdev);
+void otx2vf_set_ethtool_ops(struct net_device *netdev);
 
 int otx2_open(struct net_device *netdev);
 int otx2_stop(struct net_device *netdev);
+int otx2vf_open(struct net_device *netdev);
+int otx2vf_stop(struct net_device *netdev);
 int otx2_set_real_num_queues(struct net_device *netdev,
 			     int tx_queues, int rx_queues);
+int otx2_set_npc_parse_mode(struct otx2_nic *pfvf, bool unbind);
+
+/* MCAM filter related APIs */
+void otx2_do_set_rx_mode(struct work_struct *work);
+int otx2_add_macfilter(struct net_device *netdev, const u8 *mac);
+int otx2_mcam_flow_init(struct otx2_nic *pf);
+int otx2_alloc_mcam_entries(struct otx2_nic *pfvf);
+int otx2_del_macfilter(struct net_device *netdev, const u8 *mac);
+void otx2_mcam_flow_del(struct otx2_nic *pf);
+int otx2_destroy_ntuple_flows(struct otx2_nic *pf);
+int otx2_destroy_mcam_flows(struct otx2_nic *pfvf);
+int otx2_get_flow(struct otx2_nic *pfvf,
+		  struct ethtool_rxnfc *nfc, u32 location);
+int otx2_get_all_flows(struct otx2_nic *pfvf,
+		       struct ethtool_rxnfc *nfc, u32 *rule_locs);
+int otx2_add_flow(struct otx2_nic *pfvf,
+		  struct ethtool_rx_flow_spec *fsp);
+int otx2_remove_flow(struct otx2_nic *pfvf, u32 location);
+int otx2_prepare_flow_request(struct ethtool_rx_flow_spec *fsp,
+			      struct npc_install_flow_req *req);
+int otx2_enable_rxvlan(struct otx2_nic *pf, bool enable);
+int otx2_enable_vf_vlan(struct otx2_nic *pf);
+int otx2_install_rxvlan_offload_flow(struct otx2_nic *pfvf);
+int otx2smqvf_probe(struct otx2_nic *vf);
+int otx2smqvf_remove(struct otx2_nic *vf);
+
 #endif /* OTX2_COMMON_H */

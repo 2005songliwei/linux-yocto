@@ -18,6 +18,7 @@
 #include "cgx.h"
 #include "rvu.h"
 #include "rvu_reg.h"
+#include "ptp.h"
 
 #define DRV_NAME	"octeontx2-af"
 #define DRV_STRING      "Marvell OcteonTX2 RVU Admin Function Driver"
@@ -56,6 +57,10 @@ static char *mkex_profile; /* MKEX profile name */
 module_param(mkex_profile, charp, 0000);
 MODULE_PARM_DESC(mkex_profile, "MKEX profile name string");
 
+static char *kpu_profile; /* KPU profile name */
+module_param(kpu_profile, charp, 0000);
+MODULE_PARM_DESC(kpu_profile, "KPU profile name string");
+
 static void rvu_setup_hw_capabilities(struct rvu *rvu)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
@@ -66,14 +71,15 @@ static void rvu_setup_hw_capabilities(struct rvu *rvu)
 	hw->cap.nix_tx_link_bp = true;
 	hw->cap.nix_rx_multicast = true;
 
-	if (is_rvu_96xx_B0(rvu)) {
+	if (is_rvu_96xx_B0(rvu) || is_rvu_95xx_A0(rvu) ||
+	    is_rvu_post_96xx_C0(rvu) || is_rvu_95xx_B0(rvu)) {
 		hw->cap.nix_fixed_txschq_mapping = true;
 		hw->cap.nix_txsch_per_cgx_lmac = 4;
 		hw->cap.nix_txsch_per_lbk_lmac = 132;
 		hw->cap.nix_txsch_per_sdp_lmac = 76;
 		hw->cap.nix_shaping = false;
 		hw->cap.nix_tx_link_bp = false;
-		if (is_rvu_96xx_A0(rvu))
+		if (is_rvu_96xx_A0(rvu) || is_rvu_95xx_A0(rvu))
 			hw->cap.nix_rx_multicast = false;
 	}
 }
@@ -88,13 +94,15 @@ int rvu_poll_reg(struct rvu *rvu, u64 block, u64 offset, u64 mask, bool zero)
 	u64 reg_val;
 
 	reg = rvu->afreg_base + ((block << 28) | offset);
-	while (time_before(jiffies, timeout)) {
-		reg_val = readq(reg);
-		if (zero && !(reg_val & mask))
-			return 0;
-		if (!zero && (reg_val & mask))
-			return 0;
+again:
+	reg_val = readq(reg);
+	if (zero && !(reg_val & mask))
+		return 0;
+	if (!zero && (reg_val & mask))
+		return 0;
+	if (time_before(jiffies, timeout)) {
 		usleep_range(1, 5);
+		goto again;
 	}
 	return -EBUSY;
 }
@@ -421,6 +429,19 @@ static void rvu_check_block_implemented(struct rvu *rvu)
 	}
 }
 
+static void rvu_setup_rvum_blk_revid(struct rvu *rvu)
+{
+	rvu_write64(rvu, BLKADDR_RVUM,
+		    RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM),
+		    RVU_BLK_RVUM_REVID);
+}
+
+static void rvu_clear_rvum_blk_revid(struct rvu *rvu)
+{
+	rvu_write64(rvu, BLKADDR_RVUM,
+		    RVU_PRIV_BLOCK_TYPEX_REV(BLKTYPE_RVUM), 0x00);
+}
+
 int rvu_lf_reset(struct rvu *rvu, struct rvu_block *block, int lf)
 {
 	int err;
@@ -603,7 +624,12 @@ setup_vfmsix:
 	 */
 	cfg = rvu_read64(rvu, BLKADDR_RVUM, RVU_PRIV_CONST);
 	max_msix = cfg & 0xFFFFF;
-	phy_addr = rvu_read64(rvu, BLKADDR_RVUM, RVU_AF_MSIXTR_BASE);
+	if (rvu->fwdata && rvu->fwdata->msixtr_base)
+		phy_addr = rvu->fwdata->msixtr_base;
+	else
+		phy_addr = rvu_read64(rvu, BLKADDR_RVUM, RVU_AF_MSIXTR_BASE);
+	/* Register save */
+	rvu->msixtr_base_phy = phy_addr;
 	iova = dma_map_resource(rvu->dev, phy_addr,
 				max_msix * PCI_MSIX_ENTRY_SIZE,
 				DMA_BIDIRECTIONAL, 0);
@@ -617,6 +643,13 @@ setup_vfmsix:
 	return 0;
 }
 
+static void rvu_reset_msix(struct rvu *rvu)
+{
+	/* Restore msixtr base register */
+	rvu_write64(rvu, BLKADDR_RVUM, RVU_AF_MSIXTR_BASE,
+		    rvu->msixtr_base_phy);
+}
+
 static void rvu_free_hw_resources(struct rvu *rvu)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
@@ -628,6 +661,7 @@ static void rvu_free_hw_resources(struct rvu *rvu)
 	rvu_npa_freemem(rvu);
 	rvu_npc_freemem(rvu);
 	rvu_nix_freemem(rvu);
+	rvu_sso_freemem(rvu);
 
 	/* Free block LF bitmaps */
 	for (id = 0; id < BLK_COUNT; id++) {
@@ -635,7 +669,7 @@ static void rvu_free_hw_resources(struct rvu *rvu)
 		kfree(block->lf.bmap);
 	}
 
-	/* Free MSIX bitmaps */
+	/* Free MSIX and TIM bitmaps */
 	for (id = 0; id < hw->total_pfs; id++) {
 		pfvf = &rvu->pf[id];
 		kfree(pfvf->msix.bmap);
@@ -655,7 +689,80 @@ static void rvu_free_hw_resources(struct rvu *rvu)
 			   max_msix * PCI_MSIX_ENTRY_SIZE,
 			   DMA_BIDIRECTIONAL, 0);
 
+	rvu_reset_msix(rvu);
 	mutex_destroy(&rvu->rsrc_lock);
+}
+
+static void rvu_setup_pfvf_macaddress(struct rvu *rvu)
+{
+	struct rvu_hwinfo *hw = rvu->hw;
+	int pf, vf, numvfs, hwvf;
+	struct rvu_pfvf *pfvf;
+	u64 *mac;
+
+	for (pf = 0; pf < hw->total_pfs; pf++) {
+		if (!is_pf_cgxmapped(rvu, pf))
+			continue;
+		/* Assign MAC address to PF */
+		pfvf = &rvu->pf[pf];
+		if (rvu->fwdata && pf < PF_MACNUM_MAX) {
+			mac = &rvu->fwdata->pf_macs[pf];
+			if (*mac)
+				u64_to_ether_addr(*mac, pfvf->mac_addr);
+			else
+				eth_random_addr(pfvf->mac_addr);
+		} else {
+			eth_random_addr(pfvf->mac_addr);
+		}
+		ether_addr_copy(pfvf->default_mac, pfvf->mac_addr);
+
+		/* Assign MAC address to VFs*/
+		rvu_get_pf_numvfs(rvu, pf, &numvfs, &hwvf);
+		for (vf = 0; vf < numvfs; vf++, hwvf++) {
+			pfvf =  &rvu->hwvf[hwvf];
+			if (rvu->fwdata && hwvf < VF_MACNUM_MAX) {
+				mac = &rvu->fwdata->vf_macs[hwvf];
+				if (*mac)
+					u64_to_ether_addr(*mac, pfvf->mac_addr);
+				else
+					eth_random_addr(pfvf->mac_addr);
+			} else {
+				eth_random_addr(pfvf->mac_addr);
+			}
+		ether_addr_copy(pfvf->default_mac, pfvf->mac_addr);
+		}
+	}
+}
+
+static int rvu_fwdata_init(struct rvu *rvu)
+{
+	u64 fwdbase;
+	int err;
+
+	/* Get firmware data base address */
+	err = cgx_get_fwdata_base(&fwdbase);
+	if (err)
+		goto fail;
+	rvu->fwdata = ioremap_wc(fwdbase, sizeof(struct rvu_fwdata));
+	if (!rvu->fwdata)
+		goto fail;
+	if (!is_rvu_fwdata_valid(rvu)) {
+		dev_err(rvu->dev,
+			"Mismatch in 'fwdata' struct btw kernel and firmware\n");
+		iounmap(rvu->fwdata);
+		rvu->fwdata = NULL;
+		return -EINVAL;
+	}
+	return 0;
+fail:
+	dev_info(rvu->dev, "Unable to fetch 'fwdata' from firmware\n");
+	return -EIO;
+}
+
+static void rvu_fwdata_exit(struct rvu *rvu)
+{
+	if (rvu->fwdata)
+		iounmap(rvu->fwdata);
 }
 
 static int rvu_setup_hw_resources(struct rvu *rvu)
@@ -813,6 +920,8 @@ init:
 
 	mutex_init(&rvu->rsrc_lock);
 
+	rvu_fwdata_init(rvu);
+
 	err = rvu_setup_msix_resources(rvu);
 	if (err)
 		return err;
@@ -825,8 +934,10 @@ init:
 		/* Allocate memory for block LF/slot to pcifunc mapping info */
 		block->fn_map = devm_kcalloc(rvu->dev, block->lf.max,
 					     sizeof(u16), GFP_KERNEL);
-		if (!block->fn_map)
-			return -ENOMEM;
+		if (!block->fn_map) {
+			err = -ENOMEM;
+			goto msix_err;
+		}
 
 		/* Scan all blocks to check if low level firmware has
 		 * already provisioned any of the resources to a PF/VF.
@@ -836,25 +947,54 @@ init:
 
 	err = rvu_npc_init(rvu);
 	if (err)
-		goto exit;
+		goto npc_err;
 
 	err = rvu_cgx_init(rvu);
 	if (err)
-		goto exit;
+		goto cgx_err;
+
+	/* Assign MACs for CGX mapped functions */
+	rvu_setup_pfvf_macaddress(rvu);
 
 	err = rvu_npa_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto npa_err;
 
 	err = rvu_nix_init(rvu);
 	if (err)
-		goto cgx_err;
+		goto nix_err;
+
+	err = rvu_sso_init(rvu);
+	if (err)
+		goto sso_err;
+
+	err = rvu_tim_init(rvu);
+	if (err)
+		goto sso_err;
+
+	err = rvu_cpt_init(rvu);
+	if (err)
+		goto sso_err;
+
+	err = rvu_sdp_init(rvu);
+	if (err)
+		goto sso_err;
 
 	return 0;
 
+sso_err:
+	rvu_sso_freemem(rvu);
+nix_err:
+	rvu_nix_freemem(rvu);
+npa_err:
+	rvu_npa_freemem(rvu);
 cgx_err:
 	rvu_cgx_exit(rvu);
-exit:
+npc_err:
+	rvu_npc_freemem(rvu);
+	rvu_fwdata_exit(rvu);
+msix_err:
+	rvu_reset_msix(rvu);
 	return err;
 }
 
@@ -901,13 +1041,17 @@ int rvu_aq_alloc(struct rvu *rvu, struct admin_queue **ad_queue,
 int rvu_mbox_handler_ready(struct rvu *rvu, struct msg_req *req,
 			   struct ready_msg_rsp *rsp)
 {
+	if (rvu->fwdata) {
+		rsp->rclk_freq = rvu->fwdata->rclk;
+		rsp->sclk_freq = rvu->fwdata->sclk;
+	}
 	return 0;
 }
 
 /* Get current count of a RVU block's LF/slots
  * provisioned to a given RVU func.
  */
-static u16 rvu_get_rsrc_mapcount(struct rvu_pfvf *pfvf, int blktype)
+u16 rvu_get_rsrc_mapcount(struct rvu_pfvf *pfvf, int blktype)
 {
 	switch (blktype) {
 	case BLKTYPE_NPA:
@@ -936,7 +1080,7 @@ bool is_pffunc_map_valid(struct rvu *rvu, u16 pcifunc, int blktype)
 	pfvf = rvu_get_pfvf(rvu, pcifunc);
 
 	/* Check if this PFFUNC has a LF of type blktype attached */
-	if (!rvu_get_rsrc_mapcount(pfvf, blktype))
+	if (blktype != BLKTYPE_SSO && !rvu_get_rsrc_mapcount(pfvf, blktype))
 		return false;
 
 	return true;
@@ -946,6 +1090,9 @@ static int rvu_lookup_rsrc(struct rvu *rvu, struct rvu_block *block,
 			   int pcifunc, int slot)
 {
 	u64 val;
+
+	if (block->type == BLKTYPE_TIM)
+		return rvu_tim_lookup_rsrc(rvu, block, pcifunc, slot);
 
 	val = ((u64)pcifunc << 24) | (slot << 16) | (1ULL << 13);
 	rvu_write64(rvu, block->addr, block->lookup_reg, val);
@@ -974,6 +1121,9 @@ static void rvu_detach_block(struct rvu *rvu, int pcifunc, int blktype)
 	blkaddr = rvu_get_blkaddr(rvu, blktype, pcifunc);
 	if (blkaddr < 0)
 		return;
+
+	if (blkaddr == BLKADDR_NIX0)
+		rvu_nix_reset_mac(pfvf, pcifunc);
 
 	block = &hw->block[blkaddr];
 
@@ -1097,6 +1247,12 @@ static int rvu_check_rsrc_availability(struct rvu *rvu,
 	struct rvu_block *block;
 	int free_lfs, mappedlfs;
 
+	if (rvu_check_rsrc_policy(rvu, req, pcifunc)) {
+		dev_err(rvu->dev, "Func 0x%x: Resource policy check failed\n",
+			pcifunc);
+		return -EINVAL;
+	}
+
 	/* Only one NPA LF can be attached */
 	if (req->npalf && !rvu_get_rsrc_mapcount(pfvf, BLKTYPE_NPA)) {
 		block = &hw->block[BLKADDR_NPA];
@@ -1211,11 +1367,11 @@ int rvu_mbox_handler_attach_resources(struct rvu *rvu,
 		goto exit;
 
 	/* Now attach the requested resources */
-	if (attach->npalf)
-		rvu_attach_block(rvu, pcifunc, BLKTYPE_NPA, 1);
-
 	if (attach->nixlf)
 		rvu_attach_block(rvu, pcifunc, BLKTYPE_NIX, 1);
+
+	if (attach->npalf)
+		rvu_attach_block(rvu, pcifunc, BLKTYPE_NPA, 1);
 
 	if (attach->sso) {
 		/* RVU func doesn't know which exact LF or slot is attached
@@ -1384,6 +1540,13 @@ int rvu_mbox_handler_vf_flr(struct rvu *rvu, struct msg_req *req,
 	return 0;
 }
 
+int rvu_ndc_sync(struct rvu *rvu, int lfblkaddr, int lfidx, u64 lfoffset)
+{
+	/* Sync cached info for this LF in NDC to LLC/DRAM */
+	rvu_write64(rvu, lfblkaddr, lfoffset, BIT_ULL(12) | lfidx);
+	return rvu_poll_reg(rvu, lfblkaddr, lfoffset, BIT_ULL(12), true);
+}
+
 int rvu_mbox_handler_get_hw_cap(struct rvu *rvu, struct msg_req *req,
 				struct get_hw_cap_rsp *rsp)
 {
@@ -1391,6 +1554,65 @@ int rvu_mbox_handler_get_hw_cap(struct rvu *rvu, struct msg_req *req,
 
 	rsp->nix_fixed_txschq_mapping = hw->cap.nix_fixed_txschq_mapping;
 	rsp->nix_shaping = hw->cap.nix_shaping;
+
+	return 0;
+}
+
+int rvu_mbox_handler_ndc_sync_op(struct rvu *rvu,
+				 struct ndc_sync_op *req,
+				 struct msg_rsp *rsp)
+{
+	struct rvu_hwinfo *hw = rvu->hw;
+	u16 pcifunc = req->hdr.pcifunc;
+	int err, lfidx, lfblkaddr;
+
+	if (req->npa_lf_sync) {
+		/* Get NPA LF data */
+		lfblkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NPA, pcifunc);
+		if (lfblkaddr < 0)
+			return NPA_AF_ERR_AF_LF_INVALID;
+
+		lfidx = rvu_get_lf(rvu, &hw->block[lfblkaddr], pcifunc, 0);
+		if (lfidx < 0)
+			return NPA_AF_ERR_AF_LF_INVALID;
+
+		/* Sync NPA NDC */
+		err = rvu_ndc_sync(rvu, lfblkaddr,
+				   lfidx, NPA_AF_NDC_SYNC);
+		if (err)
+			dev_err(rvu->dev,
+				"NDC-NPA sync failed for LF %u\n", lfidx);
+	}
+
+	if (!req->nix_lf_tx_sync && !req->nix_lf_rx_sync)
+		return 0;
+
+	/* Get NIX LF data */
+	lfblkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, pcifunc);
+	if (lfblkaddr < 0)
+		return NIX_AF_ERR_AF_LF_INVALID;
+
+	lfidx = rvu_get_lf(rvu, &hw->block[lfblkaddr], pcifunc, 0);
+	if (lfidx < 0)
+		return NIX_AF_ERR_AF_LF_INVALID;
+
+	if (req->nix_lf_tx_sync) {
+		/* Sync NIX TX NDC */
+		err = rvu_ndc_sync(rvu, lfblkaddr,
+				   lfidx, NIX_AF_NDC_TX_SYNC);
+		if (err)
+			dev_err(rvu->dev,
+				"NDC-NIX-TX sync fail for LF %u\n", lfidx);
+	}
+
+	if (req->nix_lf_rx_sync) {
+		/* Sync NIX RX NDC */
+		err = rvu_ndc_sync(rvu, lfblkaddr,
+				   lfidx, NIX_AF_NDC_RX_SYNC);
+		if (err)
+			dev_err(rvu->dev,
+				"NDC-NIX-RX sync failed for LF %u\n", lfidx);
+	}
 
 	return 0;
 }
@@ -1801,6 +2023,94 @@ static void rvu_enable_mbox_intr(struct rvu *rvu)
 		    INTR_MASK(hw->total_pfs) & ~1ULL);
 }
 
+static void rvu_npa_lf_mapped_nix_lf_teardown(struct rvu *rvu, u16 pcifunc)
+{
+	struct rvu_hwinfo *hw = rvu->hw;
+	struct rvu_block *nix_block;
+	struct rsrc_detach detach;
+	u16 nix_pcifunc;
+	int blkaddr, lf;
+	u64 regval;
+
+	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, 0);
+	if (blkaddr < 0)
+		return;
+
+	nix_block = &hw->block[blkaddr];
+	for (lf = 0; lf < nix_block->lf.max; lf++) {
+		/* Loop through all the NIX LFs and check if the NPA lf is
+		 * being used based on pcifunc.
+		 */
+		regval = rvu_read64(rvu, blkaddr, NIX_AF_LFX_CFG(lf));
+		if ((regval & 0xFFFF) != pcifunc)
+			continue;
+
+		nix_pcifunc = nix_block->fn_map[lf];
+
+		/* Skip NIX LF attached to the pcifunc as it is already
+		 * quiesced.
+		 */
+		if (nix_pcifunc == pcifunc)
+			continue;
+
+		detach.partial = true;
+		detach.nixlf   = true;
+		/* Teardown the NIX LF. */
+		rvu_nix_lf_teardown(rvu, nix_pcifunc, blkaddr, lf);
+		rvu_lf_reset(rvu, nix_block, lf);
+		/* Detach the NIX LF. */
+		rvu_detach_rsrcs(rvu, &detach, nix_pcifunc);
+	}
+}
+
+static void rvu_npa_lf_mapped_sso_lf_teardown(struct rvu *rvu, u16 pcifunc)
+{
+	u16 *pcifunc_arr;
+	u16 sso_pcifunc, match_cnt = 0;
+	struct rvu_block *sso_block;
+	struct rsrc_detach detach;
+	int blkaddr, lf;
+	u64 regval;
+	size_t len;
+
+	len = sizeof(*pcifunc_arr) * (rvu->hw->total_pfs + rvu->hw->total_vfs);
+	pcifunc_arr = kmalloc(len, GFP_KERNEL);
+	if (!pcifunc_arr)
+		return;
+
+	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_SSO, 0);
+	if (blkaddr < 0) {
+		kfree(pcifunc_arr);
+		return;
+	}
+
+	sso_block = &rvu->hw->block[blkaddr];
+	for (lf = 0; lf < sso_block->lf.max; lf++) {
+		regval = rvu_read64(rvu, blkaddr, SSO_AF_XAQX_GMCTL(lf));
+		if ((regval & 0xFFFF) != pcifunc)
+			continue;
+
+		sso_pcifunc = sso_block->fn_map[lf];
+		regval = rvu_read64(rvu, blkaddr, sso_block->lfcfg_reg |
+				    (lf << sso_block->lfshift));
+		/* Save SSO PF_FUNC info to detach all LFs of that PF_FUNC at
+		 * once later.
+		 */
+		rvu_sso_lf_teardown(rvu, sso_pcifunc, lf, regval & 0xF);
+		rvu_lf_reset(rvu, sso_block, lf);
+		pcifunc_arr[match_cnt] = sso_pcifunc;
+		match_cnt++;
+	}
+
+	detach.partial = true;
+	detach.sso   = true;
+
+	for (sso_pcifunc = 0; sso_pcifunc < match_cnt; sso_pcifunc++)
+		rvu_detach_rsrcs(rvu, &detach, pcifunc_arr[sso_pcifunc]);
+
+	kfree(pcifunc_arr);
+}
+
 static void rvu_blklf_teardown(struct rvu *rvu, u16 pcifunc, u8 blkaddr)
 {
 	struct rvu_block *block;
@@ -1820,14 +2130,36 @@ static void rvu_blklf_teardown(struct rvu *rvu, u16 pcifunc, u8 blkaddr)
 		/* Cleanup LF and reset it */
 		if (block->addr == BLKADDR_NIX0)
 			rvu_nix_lf_teardown(rvu, pcifunc, block->addr, lf);
-		else if (block->addr == BLKADDR_NPA)
+		else if (block->addr == BLKADDR_NPA) {
+			rvu_npa_lf_mapped_nix_lf_teardown(rvu, pcifunc);
+			rvu_npa_lf_mapped_sso_lf_teardown(rvu, pcifunc);
 			rvu_npa_lf_teardown(rvu, pcifunc, lf);
+		} else if (block->addr == BLKADDR_SSO)
+			rvu_sso_lf_teardown(rvu, pcifunc, lf, slot);
+		else if (block->addr == BLKADDR_SSOW)
+			rvu_ssow_lf_teardown(rvu, pcifunc, lf, slot);
+		else if (block->addr == BLKADDR_TIM)
+			rvu_tim_lf_teardown(rvu, pcifunc, lf, slot);
 
 		err = rvu_lf_reset(rvu, block, lf);
 		if (err) {
 			dev_err(rvu->dev, "Failed to reset blkaddr %d LF%d\n",
 				block->addr, lf);
 		}
+
+		if (block->addr == BLKADDR_SSO)
+			rvu_sso_hwgrp_config_thresh(rvu, block->addr, lf);
+	}
+}
+
+static void rvu_sso_pfvf_rst(struct rvu *rvu, u16 pcifunc)
+{
+	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, pcifunc);
+	struct rvu_hwinfo *hw = rvu->hw;
+
+	if (pfvf->sso_uniq_ident) {
+		rvu_free_rsrc(&hw->sso.pfvf_ident, pfvf->sso_uniq_ident);
+		pfvf->sso_uniq_ident = 0;
 	}
 }
 
@@ -1846,6 +2178,7 @@ static void __rvu_flr_handler(struct rvu *rvu, u16 pcifunc)
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_SSO);
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_NPA);
 	rvu_detach_rsrcs(rvu, NULL, pcifunc);
+	rvu_sso_pfvf_rst(rvu, pcifunc);
 	mutex_unlock(&rvu->flr_lock);
 }
 
@@ -2015,6 +2348,11 @@ static void rvu_unregister_interrupts(struct rvu *rvu)
 {
 	int irq;
 
+	rvu_npa_unregister_interrupts(rvu);
+	rvu_nix_unregister_interrupts(rvu);
+	rvu_sso_unregister_interrupts(rvu);
+	rvu_cpt_unregister_interrupts(rvu);
+
 	/* Disable the Mbox interrupt */
 	rvu_write64(rvu, BLKADDR_RVUM, RVU_AF_PFAF_MBOX_INT_ENA_W1C,
 		    INTR_MASK(rvu->hw->total_pfs) & ~1ULL);
@@ -2128,6 +2466,9 @@ static int rvu_register_interrupts(struct rvu *rvu)
 	}
 	rvu->irq_allocated[RVU_AF_INT_VEC_PFME] = true;
 
+	/* Clear TRPEND bit for all PF */
+	rvu_write64(rvu, BLKADDR_RVUM,
+		    RVU_AF_PFTRPEND, INTR_MASK(rvu->hw->total_pfs));
 	/* Enable ME interrupt for all PFs*/
 	rvu_write64(rvu, BLKADDR_RVUM,
 		    RVU_AF_PFME_INT, INTR_MASK(rvu->hw->total_pfs));
@@ -2219,8 +2560,24 @@ static int rvu_register_interrupts(struct rvu *rvu)
 		goto fail;
 	}
 	rvu->irq_allocated[offset] = true;
-	return 0;
 
+	ret = rvu_npa_register_interrupts(rvu);
+	if (ret)
+		goto fail;
+
+	ret = rvu_nix_register_interrupts(rvu);
+	if (ret)
+		goto fail;
+
+	ret = rvu_sso_register_interrupts(rvu);
+	if (ret)
+		goto fail;
+
+	ret = rvu_cpt_register_interrupts(rvu);
+	if (ret)
+		goto fail;
+
+	return 0;
 fail:
 	rvu_unregister_interrupts(rvu);
 	return ret;
@@ -2319,7 +2676,7 @@ static void rvu_enable_afvf_intr(struct rvu *rvu)
 
 #define PCI_DEVID_OCTEONTX2_LBK 0xA061
 
-static int lbk_get_num_chans(void)
+int rvu_get_num_lbk_chans(void)
 {
 	struct pci_dev *pdev;
 	void __iomem *base;
@@ -2354,7 +2711,7 @@ static int rvu_enable_sriov(struct rvu *rvu)
 		return 0;
 	}
 
-	chans = lbk_get_num_chans();
+	chans = rvu_get_num_lbk_chans();
 	if (chans < 0)
 		return chans;
 
@@ -2405,6 +2762,8 @@ static void rvu_update_module_params(struct rvu *rvu)
 
 	strscpy(rvu->mkex_pfl_name,
 		mkex_profile ? mkex_profile : default_pfl_name, MKEX_NAME_LEN);
+	strscpy(rvu->kpu_pfl_name,
+		kpu_profile ? kpu_profile : default_pfl_name, KPU_NAME_LEN);
 }
 
 static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -2451,13 +2810,25 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_release_regions;
 	}
 
+	pci_set_master(pdev);
+	rvu->ptp = ptp_get();
+	if (IS_ERR(rvu->ptp)) {
+		err = PTR_ERR(rvu->ptp);
+		if (err == -EPROBE_DEFER) {
+			dev_err(dev,
+				"PTP driver not loaded, deferring probe\n");
+			goto err_release_regions;
+		}
+		rvu->ptp = NULL;
+	}
+
 	/* Map Admin function CSRs */
 	rvu->afreg_base = pcim_iomap(pdev, PCI_AF_REG_BAR_NUM, 0);
 	rvu->pfreg_base = pcim_iomap(pdev, PCI_PF_REG_BAR_NUM, 0);
 	if (!rvu->afreg_base || !rvu->pfreg_base) {
 		dev_err(dev, "Unable to map admin function CSRs, aborting\n");
 		err = -ENOMEM;
-		goto err_release_regions;
+		goto err_put_ptp;
 	}
 
 	/* Store module params in rvu structure */
@@ -2472,7 +2843,7 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	err = rvu_setup_hw_resources(rvu);
 	if (err)
-		goto err_release_regions;
+		goto err_put_ptp;
 
 	/* Init mailbox btw AF and PFs */
 	err = rvu_mbox_init(rvu, &rvu->afpf_wq_info, TYPE_AFPF,
@@ -2489,15 +2860,22 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (err)
 		goto err_flr;
 
-	/* Enable AF's VFs (if any) */
-	err = rvu_enable_sriov(rvu);
+	rvu_setup_rvum_blk_revid(rvu);
+	err = rvu_policy_init(rvu);
 	if (err)
 		goto err_irq;
 
 	/* Initialize debugfs */
 	rvu_dbg_init(rvu);
 
+	/* Enable AF's VFs (if any) */
+	err = rvu_enable_sriov(rvu);
+	if (err)
+		goto err_policy;
+
 	return 0;
+err_policy:
+	rvu_policy_destroy(rvu);
 err_irq:
 	rvu_unregister_interrupts(rvu);
 err_flr:
@@ -2506,8 +2884,12 @@ err_mbox:
 	rvu_mbox_destroy(&rvu->afpf_wq_info);
 err_hwsetup:
 	rvu_cgx_exit(rvu);
+	rvu_fwdata_exit(rvu);
 	rvu_reset_all_blocks(rvu);
 	rvu_free_hw_resources(rvu);
+	rvu_clear_rvum_blk_revid(rvu);
+err_put_ptp:
+	ptp_put(rvu->ptp);
 err_release_regions:
 	pci_release_regions(pdev);
 err_disable_device:
@@ -2524,14 +2906,17 @@ static void rvu_remove(struct pci_dev *pdev)
 	struct rvu *rvu = pci_get_drvdata(pdev);
 
 	rvu_dbg_exit(rvu);
+	rvu_policy_destroy(rvu);
 	rvu_unregister_interrupts(rvu);
 	rvu_flr_wq_destroy(rvu);
 	rvu_cgx_exit(rvu);
+	rvu_fwdata_exit(rvu);
 	rvu_mbox_destroy(&rvu->afpf_wq_info);
 	rvu_disable_sriov(rvu);
 	rvu_reset_all_blocks(rvu);
 	rvu_free_hw_resources(rvu);
-
+	rvu_clear_rvum_blk_revid(rvu);
+	ptp_put(rvu->ptp);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
@@ -2557,9 +2942,19 @@ static int __init rvu_init_module(void)
 	if (err < 0)
 		return err;
 
+	err = pci_register_driver(&ptp_driver);
+	if (err < 0)
+		goto ptp_err;
+
 	err =  pci_register_driver(&rvu_driver);
 	if (err < 0)
-		pci_unregister_driver(&cgx_driver);
+		goto rvu_err;
+
+	return 0;
+rvu_err:
+	pci_unregister_driver(&ptp_driver);
+ptp_err:
+	pci_unregister_driver(&cgx_driver);
 
 	return err;
 }
@@ -2567,6 +2962,7 @@ static int __init rvu_init_module(void)
 static void __exit rvu_cleanup_module(void)
 {
 	pci_unregister_driver(&rvu_driver);
+	pci_unregister_driver(&ptp_driver);
 	pci_unregister_driver(&cgx_driver);
 }
 

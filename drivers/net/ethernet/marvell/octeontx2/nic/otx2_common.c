@@ -60,6 +60,22 @@ void otx2_update_lmac_stats(struct otx2_nic *pfvf)
 	otx2_mbox_unlock(&pfvf->mbox);
 }
 
+void otx2_update_lmac_fec_stats(struct otx2_nic *pfvf)
+{
+	struct msg_req *req;
+
+	if (!netif_running(pfvf->netdev))
+		return;
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_fec_stats(&pfvf->mbox);
+	if (!req) {
+		otx2_mbox_unlock(&pfvf->mbox);
+		return;
+	}
+	otx2_sync_mbox_msg(&pfvf->mbox);
+	otx2_mbox_unlock(&pfvf->mbox);
+}
+
 int otx2_update_rq_stats(struct otx2_nic *pfvf, int qidx)
 {
 	struct otx2_rcv_queue *rq = &pfvf->qset.rq[qidx];
@@ -128,6 +144,7 @@ void otx2_get_stats64(struct net_device *netdev,
 	stats->tx_packets = dev_stats->tx_frames;
 	stats->tx_dropped = dev_stats->tx_drops;
 }
+EXPORT_SYMBOL(otx2_get_stats64);
 
 /* Sync MAC address with RVU AF */
 static int otx2_hw_set_mac_addr(struct otx2_nic *pfvf, u8 *mac)
@@ -190,13 +207,17 @@ int otx2_set_mac_address(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	if (!otx2_hw_set_mac_addr(pfvf, addr->sa_data))
+	if (!otx2_hw_set_mac_addr(pfvf, addr->sa_data)) {
 		memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
-	else
+		/* update dmac field in vlan offload rule */
+		if (pfvf->flags & OTX2_FLAG_RX_VLAN_SUPPORT)
+			otx2_install_rxvlan_offload_flow(pfvf);
+	} else
 		return -EPERM;
 
 	return 0;
 }
+EXPORT_SYMBOL(otx2_set_mac_address);
 
 int otx2_hw_set_mtu(struct otx2_nic *pfvf, int mtu)
 {
@@ -210,10 +231,31 @@ int otx2_hw_set_mtu(struct otx2_nic *pfvf, int mtu)
 		return -ENOMEM;
 	}
 
-	/* SMQ config limits maximum pkt size that can be transmitted */
-	req->update_smq = true;
-	pfvf->max_frs = mtu +  OTX2_ETH_HLEN;
+	/* Add EDSA/HIGIG2 header len to maxlen */
+	pfvf->max_frs = mtu +  OTX2_ETH_HLEN + pfvf->addl_mtu;
 	req->maxlen = pfvf->max_frs;
+
+	err = otx2_sync_mbox_msg(&pfvf->mbox);
+	otx2_mbox_unlock(&pfvf->mbox);
+	return err;
+}
+
+int otx2_config_pause_frm(struct otx2_nic *pfvf)
+{
+	struct cgx_pause_frm_cfg *req;
+	int err;
+
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return 0;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_cfg_pause_frm(&pfvf->mbox);
+	if (!req)
+		return -ENOMEM;
+
+	req->rx_pause = !!(pfvf->flags & OTX2_FLAG_RX_PAUSE_ENABLED);
+	req->tx_pause = !!(pfvf->flags & OTX2_FLAG_TX_PAUSE_ENABLED);
+	req->set = 1;
 
 	err = otx2_sync_mbox_msg(&pfvf->mbox);
 	otx2_mbox_unlock(&pfvf->mbox);
@@ -354,6 +396,8 @@ void otx2_config_irq_coalescing(struct otx2_nic *pfvf, int qidx)
 		     (pfvf->hw.cq_ecount_wait - 1));
 }
 
+#define OTX2_POOL_PAGE_MAX_REF	32768
+
 dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 			   gfp_t gfp)
 {
@@ -362,11 +406,11 @@ dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 	/* Check if request can be accommodated in previous allocated page */
 	if (pool->page && ((pool->page_offset + pool->rbsize) <=
 	    (PAGE_SIZE << pool->rbpage_order))) {
-		pool->pageref++;
+		pool->pageref--;
+		BUG_ON(!pool->pageref);
 		goto ret;
-	}
-
-	otx2_get_page(pool);
+	} else if (pool->page)
+		page_ref_sub(pool->page, pool->pageref);
 
 	/* Allocate a new page */
 	pool->page = alloc_pages(gfp | __GFP_COMP | __GFP_NOWARN,
@@ -374,6 +418,8 @@ dma_addr_t otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
 	if (unlikely(!pool->page))
 		return -ENOMEM;
 
+	page_ref_add(pool->page, OTX2_POOL_PAGE_MAX_REF);
+	pool->pageref = OTX2_POOL_PAGE_MAX_REF;
 	pool->page_offset = 0;
 ret:
 	iova = (u64)otx2_dma_map_page(pfvf, pool->page, pool->page_offset,
@@ -394,6 +440,7 @@ void otx2_tx_timeout(struct net_device *netdev, unsigned int txq)
 
 	schedule_work(&pfvf->reset_task);
 }
+EXPORT_SYMBOL(otx2_tx_timeout);
 
 void otx2_get_mac_from_af(struct net_device *netdev)
 {
@@ -443,7 +490,7 @@ int otx2_txschq_config(struct otx2_nic *pfvf, int lvl)
 	/* Set topology e.t.c configuration */
 	if (lvl == NIX_TXSCH_LVL_SMQ) {
 		req->reg[0] = NIX_AF_SMQX_CFG(schq);
-		req->regval[0] = ((pfvf->netdev->mtu  + OTX2_ETH_HLEN) << 8) |
+		req->regval[0] = ((OTX2_MAX_MTU + OTX2_ETH_HLEN) << 8) |
 				   OTX2_MIN_MTU;
 
 		req->regval[0] |= (0x20ULL << 51) | (0x80ULL << 39) |
@@ -553,17 +600,19 @@ void otx2_sqb_flush(struct otx2_nic *pfvf)
 {
 	int qidx, sqe_tail, sqe_head;
 	u64 incr, *ptr, val;
+	int timeout = 1000;
 
 	ptr = (u64 *)otx2_get_regaddr(pfvf, NIX_LF_SQ_OP_STATUS);
 	for (qidx = 0; qidx < pfvf->hw.tx_queues; qidx++) {
 		incr = (u64)qidx << 32;
-		while (1) {
+		while (timeout) {
 			val = otx2_atomic64_add(incr, ptr);
 			sqe_head = (val >> 20) & 0x3F;
 			sqe_tail = (val >> 28) & 0x3F;
 			if (sqe_head == sqe_tail)
 				break;
 			usleep_range(1, 3);
+			timeout--;
 		}
 	}
 }
@@ -580,6 +629,7 @@ void otx2_sqb_flush(struct otx2_nic *pfvf)
  * RED accepts pkts if free pointers > 102 & <= 205.
  * Drops pkts if free pointers < 102.
  */
+#define RQ_BP_LVL_AURA   (255 - ((85 * 256) / 100)) /* BP when 85% is full */
 #define RQ_PASS_LVL_AURA (255 - ((95 * 256) / 100)) /* RED when 95% is full */
 #define RQ_DROP_LVL_AURA (255 - ((99 * 256) / 100)) /* Drop when 99% is full */
 
@@ -645,6 +695,13 @@ static int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura)
 	sq->sg = kcalloc(qset->sqe_cnt, sizeof(struct sg_list), GFP_KERNEL);
 	if (!sq->sg)
 		return -ENOMEM;
+
+	if (pfvf->ptp) {
+		err = qmem_alloc(pfvf->dev, &sq->timestamps, qset->sqe_cnt,
+				 sizeof(*sq->timestamps));
+		if (err)
+			return err;
+	}
 
 	sq->head = 0;
 	sq->sqe_per_sqb = (pfvf->hw.sqb_size / sq->sqe_size) - 1;
@@ -741,6 +798,13 @@ static int otx2_cq_init(struct otx2_nic *pfvf, u16 qidx)
 	if (qidx < pfvf->hw.rx_queues) {
 		aq->cq.drop = RQ_DROP_LVL_CQ(pfvf->hw.rq_skid, cq->cqe_cnt);
 		aq->cq.drop_ena = 1;
+
+		/* Enable receive CQ backpressure */
+		aq->cq.bp_ena = 1;
+		aq->cq.bpid = pfvf->bpid[0];
+
+		/* Set backpressure level is same as cq pass level */
+		aq->cq.bp = RQ_PASS_LVL_CQ(pfvf->hw.rq_skid, qset->rqe_cnt);
 	}
 
 	/* Fill AQ info */
@@ -996,6 +1060,14 @@ static int otx2_aura_init(struct otx2_nic *pfvf, int aura_id,
 	aq->aura.fc_addr = pool->fc_addr->iova;
 	aq->aura.fc_hyst_bits = 0; /* Store count on all updates */
 
+	/* Enable backpressure for RQ aura */
+	if (aura_id < pfvf->hw.rqpool_cnt) {
+		aq->aura.bp_ena = 0;
+		aq->aura.nix0_bpid = pfvf->bpid[0];
+		/* Set backpressure level for RQ's Aura */
+		aq->aura.bp = RQ_BP_LVL_AURA;
+	}
+
 	/* Fill AQ info */
 	aq->ctype = NPA_AQ_CTYPE_AURA;
 	aq->op = NPA_AQ_INSTOP_INIT;
@@ -1112,7 +1184,6 @@ int otx2_sq_aura_pool_init(struct otx2_nic *pfvf)
 			otx2_aura_freeptr(pfvf, pool_id, bufptr);
 			sq->sqb_ptrs[sq->sqb_count++] = (u64)bufptr;
 		}
-		otx2_get_page(pool);
 	}
 
 	return 0;
@@ -1164,7 +1235,6 @@ int otx2_rq_aura_pool_init(struct otx2_nic *pfvf)
 			otx2_aura_freeptr(pfvf, pool_id,
 					  bufptr + OTX2_HEAD_ROOM);
 		}
-		otx2_get_page(pool);
 	}
 
 	return 0;
@@ -1225,6 +1295,7 @@ int otx2_detach_resources(struct mbox *mbox)
 	otx2_mbox_unlock(mbox);
 	return 0;
 }
+EXPORT_SYMBOL(otx2_detach_resources);
 
 int otx2_attach_npa_nix(struct otx2_nic *pfvf)
 {
@@ -1281,6 +1352,7 @@ int otx2_attach_npa_nix(struct otx2_nic *pfvf)
 
 	return 0;
 }
+EXPORT_SYMBOL(otx2_attach_npa_nix);
 
 void otx2_ctx_disable(struct mbox *mbox, int type, bool npa)
 {
@@ -1307,6 +1379,25 @@ void otx2_ctx_disable(struct mbox *mbox, int type, bool npa)
 	otx2_mbox_unlock(mbox);
 }
 
+int otx2_nix_config_bp(struct otx2_nic *pfvf, bool enable)
+{
+	struct nix_bp_cfg_req *req;
+
+	if (enable)
+		req = otx2_mbox_alloc_msg_nix_bp_enable(&pfvf->mbox);
+	else
+		req = otx2_mbox_alloc_msg_nix_bp_disable(&pfvf->mbox);
+
+	if (!req)
+		return -ENOMEM;
+
+	req->chan_base = 0;
+	req->chan_cnt = 1;
+	req->bpid_per_chan = 0;
+
+	return otx2_sync_mbox_msg(&pfvf->mbox);
+}
+
 /* Mbox message handlers */
 void mbox_handler_cgx_stats(struct otx2_nic *pfvf,
 			    struct cgx_stats_rsp *rsp)
@@ -1317,6 +1408,13 @@ void mbox_handler_cgx_stats(struct otx2_nic *pfvf,
 		pfvf->hw.cgx_rx_stats[id] = rsp->rx_stats[id];
 	for (id = 0; id < CGX_TX_STATS_COUNT; id++)
 		pfvf->hw.cgx_tx_stats[id] = rsp->tx_stats[id];
+}
+
+void mbox_handler_cgx_fec_stats(struct otx2_nic *pfvf,
+				struct cgx_fec_stats_rsp *rsp)
+{
+		pfvf->hw.cgx_fec_corr_blks += rsp->fec_corr_blks;
+		pfvf->hw.cgx_fec_uncorr_blks += rsp->fec_uncorr_blks;
 }
 
 void mbox_handler_nix_txsch_alloc(struct otx2_nic *pf,
@@ -1330,6 +1428,7 @@ void mbox_handler_nix_txsch_alloc(struct otx2_nic *pf,
 			pf->hw.txschq_list[lvl][schq] =
 				rsp->schq_list[lvl][schq];
 }
+EXPORT_SYMBOL(mbox_handler_nix_txsch_alloc);
 
 void mbox_handler_npa_lf_alloc(struct otx2_nic *pfvf,
 			       struct npa_lf_alloc_rsp *rsp)
@@ -1337,6 +1436,7 @@ void mbox_handler_npa_lf_alloc(struct otx2_nic *pfvf,
 	pfvf->hw.stack_pg_ptrs = rsp->stack_pg_ptrs;
 	pfvf->hw.stack_pg_bytes = rsp->stack_pg_bytes;
 }
+EXPORT_SYMBOL(mbox_handler_npa_lf_alloc);
 
 void mbox_handler_nix_lf_alloc(struct otx2_nic *pfvf,
 			       struct nix_lf_alloc_rsp *rsp)
@@ -1347,6 +1447,7 @@ void mbox_handler_nix_lf_alloc(struct otx2_nic *pfvf,
 	pfvf->hw.lso_tsov4_idx = rsp->lso_tsov4_idx;
 	pfvf->hw.lso_tsov6_idx = rsp->lso_tsov6_idx;
 }
+EXPORT_SYMBOL(mbox_handler_nix_lf_alloc);
 
 void mbox_handler_msix_offset(struct otx2_nic *pfvf,
 			      struct msix_offset_rsp *rsp)
@@ -1354,6 +1455,19 @@ void mbox_handler_msix_offset(struct otx2_nic *pfvf,
 	pfvf->hw.npa_msixoff = rsp->npa_msixoff;
 	pfvf->hw.nix_msixoff = rsp->nix_msixoff;
 }
+EXPORT_SYMBOL(mbox_handler_msix_offset);
+
+void mbox_handler_nix_bp_enable(struct otx2_nic *pfvf,
+				struct nix_bp_cfg_rsp *rsp)
+{
+	int chan, chan_id;
+
+	for (chan = 0; chan < rsp->chan_cnt; chan++) {
+		chan_id = ((rsp->chan_bpid[chan] >> 10) & 0x7F);
+		pfvf->bpid[chan_id] = rsp->chan_bpid[chan] & 0x3FF;
+	}
+}
+EXPORT_SYMBOL(mbox_handler_nix_bp_enable);
 
 void otx2_free_cints(struct otx2_nic *pfvf, int n)
 {

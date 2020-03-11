@@ -13,10 +13,24 @@
 #include <linux/stddef.h>
 #include <linux/etherdevice.h>
 #include <linux/log2.h>
+#include <uapi/linux/net_tstamp.h>
 
 #include "otx2_common.h"
+#include "otx2_ptp.h"
 
 #define DRV_NAME	"octeontx2-nicpf"
+#define DRV_VF_NAME	"octeontx2-nicvf"
+#define DRV_VF_VERSION	"1.0"
+
+#define OTX2_DEFAULT_ACTION	0x1
+
+static struct cgx_fw_data *otx2_get_fwdata(struct otx2_nic *pfvf);
+
+static const char otx2_priv_flags_strings[][ETH_GSTRING_LEN] = {
+	"pam4",
+	"edsa",
+	"higig2",
+};
 
 struct otx2_stat {
 	char name[ETH_GSTRING_LEN];
@@ -28,6 +42,9 @@ struct otx2_stat {
 	.name = #stat, \
 	.index = offsetof(struct otx2_dev_stats, stat) / sizeof(u64), \
 }
+
+#define OTX2_ETHTOOL_SUPPORTED_MODES 0x638CE23 //110001110001100111000100011
+#define OTX2_ETHTOOL_ALL_MODES (ULLONG_MAX)
 
 static const struct otx2_stat otx2_dev_stats[] = {
 	OTX2_DEV_STAT(rx_ucast_frames),
@@ -63,14 +80,34 @@ static const unsigned int otx2_n_dev_stats = ARRAY_SIZE(otx2_dev_stats);
 static const unsigned int otx2_n_drv_stats = ARRAY_SIZE(otx2_drv_stats);
 static const unsigned int otx2_n_queue_stats = ARRAY_SIZE(otx2_queue_stats);
 
+int __weak otx2vf_open(struct net_device *netdev)
+{
+	return 0;
+}
+
+int __weak otx2vf_stop(struct net_device *netdev)
+{
+	return 0;
+}
+
 static void otx2_dev_open(struct net_device *netdev)
 {
-	otx2_open(netdev);
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+
+	if (pfvf->pcifunc & RVU_PFVF_FUNC_MASK)
+		otx2vf_open(netdev);
+	else
+		otx2_open(netdev);
 }
 
 static void otx2_dev_stop(struct net_device *netdev)
 {
-	otx2_stop(netdev);
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+
+	if (pfvf->pcifunc & RVU_PFVF_FUNC_MASK)
+		otx2vf_stop(netdev);
+	else
+		otx2_stop(netdev);
 }
 
 static void otx2_get_drvinfo(struct net_device *netdev,
@@ -108,6 +145,12 @@ static void otx2_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 	int stats;
 
+	if (sset == ETH_SS_PRIV_FLAGS) {
+		memcpy(data, otx2_priv_flags_strings,
+		       ARRAY_SIZE(otx2_priv_flags_strings) * ETH_GSTRING_LEN);
+		return;
+	}
+
 	if (sset != ETH_SS_STATS)
 		return;
 
@@ -135,6 +178,12 @@ static void otx2_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 
 	strcpy(data, "reset_count");
 	data += ETH_GSTRING_LEN;
+	if (pfvf->linfo.fec) {
+		sprintf(data, "Fec Corrected Errors: ");
+		data += ETH_GSTRING_LEN;
+		sprintf(data, "Fec Uncorrected Errors: ");
+		data += ETH_GSTRING_LEN;
+	}
 }
 
 static void otx2_get_qset_stats(struct otx2_nic *pfvf,
@@ -167,11 +216,30 @@ static void otx2_get_qset_stats(struct otx2_nic *pfvf,
 	}
 }
 
+static int otx2_get_phy_fec_stats(struct otx2_nic *pfvf)
+{
+	struct msg_req *req;
+	int rc = -EAGAIN;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_get_phy_fec_stats(&pfvf->mbox);
+	if (!req)
+		goto end;
+
+	if (!otx2_sync_mbox_msg(&pfvf->mbox))
+		rc = 0;
+end:
+	otx2_mbox_unlock(&pfvf->mbox);
+	return rc;
+}
+
 /* Get device and per queue statistics */
 static void otx2_get_ethtool_stats(struct net_device *netdev,
 				   struct ethtool_stats *stats, u64 *data)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
+	u64 fec_corr_blks, fec_uncorr_blks;
+	struct cgx_fw_data *rsp;
 	int stat;
 
 	otx2_get_dev_stats(pfvf);
@@ -190,12 +258,45 @@ static void otx2_get_ethtool_stats(struct net_device *netdev,
 	for (stat = 0; stat < CGX_TX_STATS_COUNT; stat++)
 		*(data++) = pfvf->hw.cgx_tx_stats[stat];
 	*(data++) = pfvf->reset_count;
+
+	if (pfvf->linfo.fec == OTX2_FEC_NONE)
+		return;
+
+	fec_corr_blks = pfvf->hw.cgx_fec_corr_blks;
+	fec_uncorr_blks = pfvf->hw.cgx_fec_uncorr_blks;
+
+	rsp = otx2_get_fwdata(pfvf);
+	if (!IS_ERR(rsp) && rsp->fwdata.phy.misc.has_fec_stats &&
+	    !otx2_get_phy_fec_stats(pfvf)) {
+		/* Fetch fwdata again because it's been recently populated with
+		 * latest PHY FEC stats.
+		 */
+		rsp = otx2_get_fwdata(pfvf);
+		if (!IS_ERR(rsp)) {
+			struct fec_stats_s *p = &rsp->fwdata.phy.fec_stats;
+
+			if (pfvf->linfo.fec == OTX2_FEC_BASER) {
+				fec_corr_blks   = p->brfec_corr_blks;
+				fec_uncorr_blks = p->brfec_uncorr_blks;
+			} else {
+				fec_corr_blks   = p->rsfec_corr_cws;
+				fec_uncorr_blks = p->rsfec_uncorr_cws;
+			}
+		}
+	}
+
+	*(data++) = fec_corr_blks;
+	*(data++) = fec_uncorr_blks;
 }
 
 static int otx2_get_sset_count(struct net_device *netdev, int sset)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
-	int qstats_count;
+	int qstats_count, fec_stats_count = 0;
+	bool if_up = netif_running(netdev);
+
+	if (sset == ETH_SS_PRIV_FLAGS)
+		return ARRAY_SIZE(otx2_priv_flags_strings);
 
 	if (sset != ETH_SS_STATS)
 		return -EINVAL;
@@ -203,8 +304,15 @@ static int otx2_get_sset_count(struct net_device *netdev, int sset)
 	qstats_count = otx2_n_queue_stats *
 		       (pfvf->hw.rx_queues + pfvf->hw.tx_queues);
 
+	if (!if_up || !pfvf->linfo.fec) {
+		return otx2_n_dev_stats + otx2_n_drv_stats + qstats_count +
+			CGX_RX_STATS_COUNT + CGX_TX_STATS_COUNT + 1;
+	}
+	fec_stats_count = 2;
+	otx2_update_lmac_fec_stats(pfvf);
 	return otx2_n_dev_stats + otx2_n_drv_stats + qstats_count +
-		CGX_RX_STATS_COUNT + CGX_TX_STATS_COUNT + 1;
+		CGX_RX_STATS_COUNT + CGX_TX_STATS_COUNT + 1 +
+		fec_stats_count;
 }
 
 /* Get no of queues device supports and current queue count */
@@ -251,6 +359,51 @@ fail:
 		    pfvf->hw.tx_queues, pfvf->hw.rx_queues);
 
 	return err;
+}
+
+static void otx2_get_pauseparam(struct net_device *netdev,
+				struct ethtool_pauseparam *pause)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_pause_frm_cfg *req, *rsp;
+
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return;
+
+	req = otx2_mbox_alloc_msg_cgx_cfg_pause_frm(&pfvf->mbox);
+	if (!req)
+		return;
+
+	if (!otx2_sync_mbox_msg(&pfvf->mbox)) {
+		rsp = (struct cgx_pause_frm_cfg *)
+		       otx2_mbox_get_rsp(&pfvf->mbox.mbox, 0, &req->hdr);
+		pause->rx_pause = rsp->rx_pause;
+		pause->tx_pause = rsp->tx_pause;
+	}
+}
+
+static int otx2_set_pauseparam(struct net_device *netdev,
+			       struct ethtool_pauseparam *pause)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+
+	if (pause->autoneg)
+		return -EOPNOTSUPP;
+
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return -EOPNOTSUPP;
+
+	if (pause->rx_pause)
+		pfvf->flags |= OTX2_FLAG_RX_PAUSE_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_RX_PAUSE_ENABLED;
+
+	if (pause->tx_pause)
+		pfvf->flags |= OTX2_FLAG_TX_PAUSE_ENABLED;
+	else
+		pfvf->flags &= ~OTX2_FLAG_TX_PAUSE_ENABLED;
+
+	return otx2_config_pause_frm(pfvf);
 }
 
 static void otx2_get_ringparam(struct net_device *netdev,
@@ -516,6 +669,16 @@ static int otx2_get_rxnfc(struct net_device *dev,
 		nfc->data = pfvf->hw.rx_queues;
 		ret = 0;
 		break;
+	case ETHTOOL_GRXCLSRLCNT:
+		nfc->rule_cnt = pfvf->flow_cfg->nr_flows;
+		ret = 0;
+		break;
+	case ETHTOOL_GRXCLSRULE:
+		ret = otx2_get_flow(pfvf, nfc,  nfc->fs.location);
+		break;
+	case ETHTOOL_GRXCLSRLALL:
+		ret = otx2_get_all_flows(pfvf, nfc, rules);
+		break;
 	case ETHTOOL_GRXFH:
 		return otx2_get_rss_hash_opts(pfvf, nfc);
 	default:
@@ -524,7 +687,154 @@ static int otx2_get_rxnfc(struct net_device *dev,
 	return ret;
 }
 
+int otx2_prepare_flow_request(struct ethtool_rx_flow_spec *fsp,
+			      struct npc_install_flow_req *req)
+{
+	struct ethtool_tcpip4_spec *l4_mask = &fsp->m_u.tcp_ip4_spec;
+	struct ethtool_tcpip4_spec *l4_hdr = &fsp->h_u.tcp_ip4_spec;
+	struct ethhdr *eth_mask = &fsp->m_u.ether_spec;
+	struct ethhdr *eth_hdr = &fsp->h_u.ether_spec;
+	struct flow_msg *pmask = &req->mask;
+	struct flow_msg *pkt = &req->packet;
+	u32 flow_type;
+
+	flow_type = fsp->flow_type & ~(FLOW_EXT | FLOW_MAC_EXT);
+	switch (flow_type) {
+	/* bits not set in mask are don't care */
+	case ETHER_FLOW:
+		if (!is_zero_ether_addr(eth_mask->h_source)) {
+			ether_addr_copy(pkt->smac, eth_hdr->h_source);
+			ether_addr_copy(pmask->smac, eth_mask->h_source);
+			req->features |= BIT_ULL(NPC_SMAC);
+		}
+		if (!is_zero_ether_addr(eth_mask->h_dest)) {
+			ether_addr_copy(pkt->dmac, eth_hdr->h_dest);
+			ether_addr_copy(pmask->dmac, eth_mask->h_dest);
+			req->features |= BIT_ULL(NPC_DMAC);
+		}
+		if (eth_mask->h_proto) {
+			memcpy(&pkt->etype, &eth_hdr->h_proto,
+			       sizeof(pkt->etype));
+			memcpy(&pmask->etype, &eth_mask->h_proto,
+			       sizeof(pmask->etype));
+			req->features |= BIT_ULL(NPC_ETYPE);
+		}
+		break;
+	case TCP_V4_FLOW:
+	case UDP_V4_FLOW:
+		if (l4_mask->ip4src) {
+			memcpy(&pkt->ip4src, &l4_hdr->ip4src,
+			       sizeof(pkt->ip4src));
+			memcpy(&pmask->ip4src, &l4_mask->ip4src,
+			       sizeof(pmask->ip4src));
+			req->features |= BIT_ULL(NPC_SIP_IPV4);
+		}
+		if (l4_mask->ip4dst) {
+			memcpy(&pkt->ip4dst, &l4_hdr->ip4dst,
+			       sizeof(pkt->ip4dst));
+			memcpy(&pmask->ip4dst, &l4_mask->ip4dst,
+			       sizeof(pmask->ip4dst));
+			req->features |= BIT_ULL(NPC_DIP_IPV4);
+		}
+		if (l4_mask->psrc) {
+			memcpy(&pkt->sport, &l4_hdr->psrc, sizeof(pkt->sport));
+			memcpy(&pmask->sport, &l4_mask->psrc,
+			       sizeof(pmask->sport));
+			if (flow_type == UDP_V4_FLOW)
+				req->features |= BIT_ULL(NPC_SPORT_UDP);
+			else
+				req->features |= BIT_ULL(NPC_SPORT_TCP);
+		}
+		if (l4_mask->pdst) {
+			memcpy(&pkt->dport, &l4_hdr->pdst, sizeof(pkt->dport));
+			memcpy(&pmask->dport, &l4_mask->pdst,
+			       sizeof(pmask->dport));
+			if (flow_type == UDP_V4_FLOW)
+				req->features |= BIT_ULL(NPC_DPORT_UDP);
+			else
+				req->features |= BIT_ULL(NPC_DPORT_TCP);
+		}
+		break;
+	default:
+		return -ENOTSUPP;
+	}
+	if (fsp->flow_type & FLOW_EXT) {
+		if (fsp->m_ext.vlan_etype)
+			return -EINVAL;
+		if (fsp->m_ext.vlan_tci) {
+			if (fsp->m_ext.vlan_tci != cpu_to_be16(VLAN_VID_MASK))
+				return -EINVAL;
+			if (be16_to_cpu(fsp->h_ext.vlan_tci) >= VLAN_N_VID)
+				return -EINVAL;
+			memcpy(&pkt->vlan_tci, &fsp->h_ext.vlan_tci,
+			       sizeof(pkt->vlan_tci));
+			memcpy(&pmask->vlan_tci, &fsp->m_ext.vlan_tci,
+			       sizeof(pmask->vlan_tci));
+			req->features |= BIT_ULL(NPC_OUTER_VID);
+		}
+		/* Not Drop/Direct to queue but use action in default entry */
+		if (fsp->m_ext.data[1] &&
+		    fsp->h_ext.data[1] == cpu_to_be32(OTX2_DEFAULT_ACTION))
+			req->op = NIX_RX_ACTION_DEFAULT;
+	}
+	if (fsp->flow_type & FLOW_MAC_EXT &&
+	    !is_zero_ether_addr(fsp->m_ext.h_dest)) {
+		ether_addr_copy(pkt->dmac, fsp->h_ext.h_dest);
+		ether_addr_copy(pmask->dmac, fsp->m_ext.h_dest);
+		req->features |= BIT_ULL(NPC_DMAC);
+	}
+
+	if (!req->features)
+		return -ENOTSUPP;
+
+	return 0;
+}
+
 static int otx2_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *nfc)
+{
+	bool ntuple = !!(dev->features & NETIF_F_NTUPLE);
+	struct otx2_nic *pfvf = netdev_priv(dev);
+	int ret = -EOPNOTSUPP;
+
+	switch (nfc->cmd) {
+	case ETHTOOL_SRXFH:
+		ret = otx2_set_rss_hash_opts(pfvf, nfc);
+		break;
+	case ETHTOOL_SRXCLSRLINS:
+		if (netif_running(dev) && ntuple)
+			ret = otx2_add_flow(pfvf, &nfc->fs);
+		break;
+	case ETHTOOL_SRXCLSRLDEL:
+		if (netif_running(dev) && ntuple)
+			ret = otx2_remove_flow(pfvf, nfc->fs.location);
+		break;
+	default:
+		break;
+	}
+
+	return ret;
+}
+
+static int otx2vf_get_rxnfc(struct net_device *dev,
+			    struct ethtool_rxnfc *nfc, u32 *rules)
+{
+	struct otx2_nic *pfvf = netdev_priv(dev);
+	int ret = -EOPNOTSUPP;
+
+	switch (nfc->cmd) {
+	case ETHTOOL_GRXRINGS:
+		nfc->data = pfvf->hw.rx_queues;
+		ret = 0;
+		break;
+	case ETHTOOL_GRXFH:
+		return otx2_get_rss_hash_opts(pfvf, nfc);
+	default:
+		break;
+	}
+	return ret;
+}
+
+static int otx2vf_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *nfc)
 {
 	struct otx2_nic *pfvf = netdev_priv(dev);
 	int ret = -EOPNOTSUPP;
@@ -609,7 +919,8 @@ static int otx2_set_rxfh(struct net_device *dev, const u32 *indir,
 		otx2_set_rss_key(pfvf);
 	}
 
-	otx2_set_rss_table(pfvf);
+	if (netif_running(dev))
+		otx2_set_rss_table(pfvf);
 	return 0;
 }
 
@@ -631,10 +942,515 @@ static u32 otx2_get_link(struct net_device *netdev)
 {
 	struct otx2_nic *pfvf = netdev_priv(netdev);
 
+	if (is_otx2_lbkvf(pfvf->pdev))
+		return 1;
 	return pfvf->linfo.link_up;
 }
 
-static const struct ethtool_ops otx2_ethtool_ops = {
+static int otx2_get_ts_info(struct net_device *netdev,
+			    struct ethtool_ts_info *info)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+
+	if (!pfvf->ptp)
+		return ethtool_op_get_ts_info(netdev, info);
+
+	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+				SOF_TIMESTAMPING_RX_SOFTWARE |
+				SOF_TIMESTAMPING_SOFTWARE |
+				SOF_TIMESTAMPING_TX_HARDWARE |
+				SOF_TIMESTAMPING_RX_HARDWARE |
+				SOF_TIMESTAMPING_RAW_HARDWARE;
+
+	info->phc_index = otx2_ptp_clock_index(pfvf);
+
+	info->tx_types = (1 << HWTSTAMP_TX_OFF) | (1 << HWTSTAMP_TX_ON);
+
+	info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |
+			   (1 << HWTSTAMP_FILTER_ALL);
+
+	return 0;
+}
+
+static void otx2_get_fec_info(u64 index, int mode, struct ethtool_link_ksettings
+			      *link_ksettings)
+{
+	switch (index) {
+	case OTX2_FEC_NONE:
+		if (mode)
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     advertising,
+							     FEC_NONE);
+		else
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     supported,
+							     FEC_NONE);
+		break;
+	case OTX2_FEC_BASER:
+		if (mode)
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     advertising,
+							     FEC_BASER);
+		else
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     supported,
+							     FEC_BASER);
+		break;
+	case OTX2_FEC_RS:
+		if (mode)
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     advertising,
+							     FEC_RS);
+		else
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     supported,
+							     FEC_RS);
+		break;
+	case OTX2_FEC_BASER | OTX2_FEC_RS:
+		if (mode) {
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     advertising,
+							     FEC_BASER);
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     advertising,
+							     FEC_RS);
+		} else {
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     supported,
+							     FEC_BASER);
+			ethtool_link_ksettings_add_link_mode(link_ksettings,
+							     supported,
+							     FEC_RS);
+		}
+
+		break;
+	}
+}
+
+static void otx2_get_link_mode_info(u64 index, int mode,
+				    struct ethtool_link_ksettings
+				    *link_ksettings)
+{
+	u64 ethtool_link_mode = 0;
+	int bit_position = 0;
+	u64 link_modes = 0;
+
+	int cgx_link_mode[29] = {0,
+		ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseR_FEC_BIT,
+		ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
+		ETHTOOL_LINK_MODE_20000baseMLD2_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseCR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseSR_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseSR2_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseLR_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseLRM_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT
+	};
+		link_modes = index & OTX2_ETHTOOL_SUPPORTED_MODES;
+
+	for (bit_position = 0; link_modes; bit_position++, link_modes >>= 1) {
+		if (!(link_modes & 1))
+			continue;
+
+		if (bit_position ==  0)
+			ethtool_link_mode = 0x3F;
+
+		ethtool_link_mode |= 1ULL << cgx_link_mode[bit_position];
+		if (mode)
+			*link_ksettings->link_modes.advertising |=
+							ethtool_link_mode;
+		else
+			*link_ksettings->link_modes.supported |=
+							ethtool_link_mode;
+	}
+}
+
+static struct cgx_fw_data *otx2_get_fwdata(struct otx2_nic *pfvf)
+{
+	struct cgx_fw_data *rsp = NULL;
+	struct msg_req *req;
+	int err = 0;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_get_aux_link_info(&pfvf->mbox);
+	if (!req) {
+		otx2_mbox_unlock(&pfvf->mbox);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	err = otx2_sync_mbox_msg(&pfvf->mbox);
+	if (!err) {
+		rsp = (struct cgx_fw_data *)
+			otx2_mbox_get_rsp(&pfvf->mbox.mbox, 0, &req->hdr);
+	} else {
+		rsp = ERR_PTR(err);
+	}
+
+	otx2_mbox_unlock(&pfvf->mbox);
+	return rsp;
+}
+
+static int otx2_get_module_info(struct net_device *netdev,
+				struct ethtool_modinfo *modinfo)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+
+	rsp = otx2_get_fwdata(pfvf);
+	if (IS_ERR(rsp))
+		return PTR_ERR(rsp);
+
+	modinfo->type = rsp->fwdata.sfp_eeprom.sff_id;
+	modinfo->eeprom_len = SFP_EEPROM_SIZE;
+	return 0;
+}
+
+static int otx2_get_module_eeprom(struct net_device *netdev,
+				  struct ethtool_eeprom *ee,
+				  u8 *data)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+
+	rsp = otx2_get_fwdata(pfvf);
+	if (IS_ERR(rsp))
+		return PTR_ERR(rsp);
+
+	memcpy(data, &rsp->fwdata.sfp_eeprom.buf, ee->len);
+
+	return 0;
+}
+
+static int otx2_get_link_ksettings(struct net_device *netdev,
+				   struct ethtool_link_ksettings *cmd)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp = NULL;
+	u32 supported = 0;
+
+	cmd->base.duplex = pfvf->linfo.full_duplex;
+	cmd->base.speed = pfvf->linfo.speed;
+	cmd->base.autoneg = pfvf->linfo.an;
+	cmd->base.port = pfvf->linfo.port;
+
+	rsp = otx2_get_fwdata(pfvf);
+	if (IS_ERR(rsp))
+		return PTR_ERR(rsp);
+
+	if (rsp->fwdata.supported_an)
+		supported |= SUPPORTED_Autoneg;
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						supported);
+	otx2_get_link_mode_info(rsp->fwdata.advertised_link_modes, 1, cmd);
+	otx2_get_fec_info(rsp->fwdata.advertised_fec, 1, cmd);
+
+	otx2_get_link_mode_info(rsp->fwdata.supported_link_modes, 0, cmd);
+	otx2_get_fec_info(rsp->fwdata.supported_fec, 0, cmd);
+
+	return 0;
+}
+
+static int otx2_set_link_ksettings(struct net_device *netdev,
+				   const struct ethtool_link_ksettings *cmd)
+{
+	unsigned long advertising = 0;
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_set_link_mode_req *req;
+	struct cgx_set_link_mode_rsp *rsp;
+	int err = 0;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_set_link_mode(&pfvf->mbox);
+	if (!req) {
+		otx2_mbox_unlock(&pfvf->mbox);
+		return -EAGAIN;
+	}
+
+	advertising = (*cmd->link_modes.advertising) & (OTX2_ETHTOOL_ALL_MODES);
+	if (!(advertising & (advertising - 1)) &&
+	    (advertising <= BIT_ULL(ETHTOOL_LINK_MODE_10000baseLRM_Full_BIT))) {
+		req->args.mode = advertising;
+	} else {
+		otx2_mbox_unlock(&pfvf->mbox);
+		return -EINVAL;
+	}
+	err =  otx2_sync_mbox_msg(&pfvf->mbox);
+	if (!err) {
+		rsp = (struct cgx_set_link_mode_rsp *)
+			otx2_mbox_get_rsp(&pfvf->mbox.mbox, 0, &req->hdr);
+		if (rsp->status)
+			err =  rsp->status;
+	}
+	otx2_mbox_unlock(&pfvf->mbox);
+	return err;
+}
+
+static int otx2_get_fecparam(struct net_device *netdev,
+			     struct ethtool_fecparam *fecparam)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+	int fec[] = {
+		ETHTOOL_FEC_OFF,
+		ETHTOOL_FEC_BASER,
+		ETHTOOL_FEC_RS,
+		ETHTOOL_FEC_BASER | ETHTOOL_FEC_RS};
+#define FEC_MAX_INDEX 3
+	if (pfvf->linfo.fec < FEC_MAX_INDEX)
+		fecparam->active_fec = fec[pfvf->linfo.fec];
+
+	rsp = otx2_get_fwdata(pfvf);
+	if (IS_ERR(rsp))
+		return PTR_ERR(rsp);
+
+	if (rsp->fwdata.supported_fec <= FEC_MAX_INDEX) {
+		if (!rsp->fwdata.supported_fec)
+			fecparam->fec = ETHTOOL_FEC_NONE;
+		else
+			fecparam->fec = fec[rsp->fwdata.supported_fec];
+	}
+	return 0;
+}
+
+static int otx2_set_fecparam(struct net_device *netdev,
+			     struct ethtool_fecparam *fecparam)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct fec_mode *req, *rsp;
+	int err = 0, fec = 0;
+
+	switch (fecparam->fec) {
+	case ETHTOOL_FEC_OFF:
+		fec = OTX2_FEC_NONE;
+		break;
+	case ETHTOOL_FEC_RS:
+		fec = OTX2_FEC_RS;
+		break;
+	case ETHTOOL_FEC_BASER:
+		fec = OTX2_FEC_BASER;
+		break;
+	default:
+		fec = OTX2_FEC_NONE;
+		break;
+	}
+
+	if (fec == pfvf->linfo.fec)
+		return 0;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_set_fec_param(&pfvf->mbox);
+	if (!req) {
+		err = -EAGAIN;
+		goto end;
+	}
+	req->fec = fec;
+	err = otx2_sync_mbox_msg(&pfvf->mbox);
+	if (err)
+		goto end;
+
+	rsp = (struct fec_mode *)otx2_mbox_get_rsp(&pfvf->mbox.mbox,
+						   0, &req->hdr);
+	if (rsp->fec >= 0) {
+		pfvf->linfo.fec = rsp->fec;
+		pfvf->hw.cgx_fec_corr_blks = 0;
+		pfvf->hw.cgx_fec_uncorr_blks = 0;
+
+	} else {
+		err = rsp->fec;
+	}
+
+end:	otx2_mbox_unlock(&pfvf->mbox);
+	return err;
+}
+
+static u32 otx2_get_priv_flags(struct net_device *netdev)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_fw_data *rsp;
+
+	rsp = otx2_get_fwdata(pfvf);
+
+	if (IS_ERR(rsp)) {
+		pfvf->ethtool_flags &= ~OTX2_PRIV_FLAG_PAM4;
+	} else {
+		if (rsp->fwdata.phy.misc.mod_type)
+			pfvf->ethtool_flags |= OTX2_PRIV_FLAG_PAM4;
+		else
+			pfvf->ethtool_flags &= ~OTX2_PRIV_FLAG_PAM4;
+	}
+
+	return pfvf->ethtool_flags;
+}
+
+static int otx2_set_phy_mod_type(struct net_device *netdev, bool enable)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	struct cgx_phy_mod_type *req;
+	struct cgx_fw_data *fwd;
+	int rc = -EAGAIN;
+
+	fwd = otx2_get_fwdata(pfvf);
+	if (IS_ERR(fwd))
+		return -EAGAIN;
+
+	/* ret here if phy does not support this feature */
+	if (!fwd->fwdata.phy.misc.can_change_mod_type)
+		return -EOPNOTSUPP;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_cgx_set_phy_mod_type(&pfvf->mbox);
+	if (!req)
+		goto end;
+
+	req->mod = enable;
+
+	if (!otx2_sync_mbox_msg(&pfvf->mbox))
+		rc = 0;
+end:
+	otx2_mbox_unlock(&pfvf->mbox);
+	return rc;
+}
+
+int otx2_set_npc_parse_mode(struct otx2_nic *pfvf, bool unbind)
+{
+	struct npc_set_pkind *req;
+	int rc = -EAGAIN;
+
+	otx2_mbox_lock(&pfvf->mbox);
+	req = otx2_mbox_alloc_msg_npc_set_pkind(&pfvf->mbox);
+	if (!req)
+		goto end;
+
+	if (unbind)
+		req->mode = OTX2_PRIV_FLAGS_DEFAULT;
+	else if (OTX2_IS_HIGIG2_ENABLED(pfvf->ethtool_flags))
+		req->mode = OTX2_PRIV_FLAGS_HIGIG;
+	else if (OTX2_IS_EDSA_ENABLED(pfvf->ethtool_flags))
+		req->mode = OTX2_PRIV_FLAGS_EDSA;
+	else
+		req->mode = OTX2_PRIV_FLAGS_DEFAULT;
+
+	req->dir  = PKIND_RX;
+
+	/* req AF to change pkind on both the dir */
+	if (req->mode == OTX2_PRIV_FLAGS_HIGIG || unbind)
+		req->dir |= PKIND_TX;
+
+	if (!otx2_sync_mbox_msg(&pfvf->mbox))
+		rc = 0;
+	else
+		pfvf->ethtool_flags &= ~req->mode;
+end:
+	otx2_mbox_unlock(&pfvf->mbox);
+	return rc;
+}
+
+static int otx2_enable_addl_header(struct net_device *netdev, int bitpos,
+				   u32 len, bool enable)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	bool if_up = netif_running(netdev);
+
+	if (enable) {
+		pfvf->ethtool_flags |= BIT(bitpos);
+	} else {
+		pfvf->ethtool_flags &= ~BIT(bitpos);
+		len = 0;
+	}
+
+	if (if_up)
+		otx2_stop(netdev);
+
+	/* Update max FRS so that additional hdrs are considered */
+	pfvf->addl_mtu = len;
+
+	/* Incase HIGIG2 mode is set packet will have 16 bytes of
+	 * extra header at start of packet which stack does not need.
+	 */
+	if (OTX2_IS_HIGIG2_ENABLED(pfvf->ethtool_flags))
+		pfvf->xtra_hdr = 16;
+	else
+		pfvf->xtra_hdr = 0;
+
+	/* NPC parse mode will be updated here */
+	if (if_up)
+		otx2_open(netdev);
+
+	return 0;
+}
+
+static int otx2_set_priv_flags(struct net_device *netdev, u32 new_flags)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+	bool enable = false;
+	int bitnr, rc = 0;
+	u32 chg_flags;
+
+	/* Get latest PAM4 settings */
+	otx2_get_priv_flags(netdev);
+
+	chg_flags =  new_flags ^ pfvf->ethtool_flags;
+	if (!chg_flags)
+		return 0;
+
+	/* Some are mutually exclusive, so allow only change at a time */
+	if (hweight32(chg_flags) != 1)
+		return -EINVAL;
+
+	bitnr = ffs(chg_flags) - 1;
+	if (new_flags & BIT(bitnr))
+		enable = true;
+
+	switch (BIT(bitnr)) {
+	case OTX2_PRIV_FLAG_PAM4:
+		rc = otx2_set_phy_mod_type(netdev, enable);
+		break;
+	case OTX2_PRIV_FLAG_EDSA_HDR:
+		/* HIGIG & EDSA  are mutual exclusive */
+		if (enable && OTX2_IS_HIGIG2_ENABLED(pfvf->ethtool_flags))
+			return -EINVAL;
+		return otx2_enable_addl_header(netdev, bitnr,
+					       OTX2_EDSA_HDR_LEN, enable);
+		break;
+	case OTX2_PRIV_FLAG_HIGIG2_HDR:
+		if (enable && OTX2_IS_EDSA_ENABLED(pfvf->ethtool_flags))
+			return -EINVAL;
+		return otx2_enable_addl_header(netdev, bitnr,
+					       OTX2_HIGIG2_HDR_LEN, enable);
+		break;
+	default:
+		break;
+	}
+
+	/* save the change */
+	if (!rc) {
+		if (enable)
+			pfvf->ethtool_flags |= BIT(bitnr);
+		else
+			pfvf->ethtool_flags &= ~BIT(bitnr);
+	}
+
+	return rc;
+}
+
+static struct ethtool_ops otx2_ethtool_ops = {
 	.get_link		= otx2_get_link,
 	.get_drvinfo		= otx2_get_drvinfo,
 	.get_strings		= otx2_get_strings,
@@ -654,9 +1470,117 @@ static const struct ethtool_ops otx2_ethtool_ops = {
 	.set_rxfh		= otx2_set_rxfh,
 	.get_msglevel		= otx2_get_msglevel,
 	.set_msglevel		= otx2_set_msglevel,
+	.get_ts_info		= otx2_get_ts_info,
+	.get_link_ksettings     = otx2_get_link_ksettings,
+	.set_link_ksettings     = otx2_set_link_ksettings,
+	.get_pauseparam		= otx2_get_pauseparam,
+	.set_pauseparam		= otx2_set_pauseparam,
+	.get_fecparam		= otx2_get_fecparam,
+	.set_fecparam		= otx2_set_fecparam,
+	.get_module_info	= otx2_get_module_info,
+	.get_module_eeprom	= otx2_get_module_eeprom,
+	.get_priv_flags		= otx2_get_priv_flags,
+	.set_priv_flags		= otx2_set_priv_flags,
 };
 
 void otx2_set_ethtool_ops(struct net_device *netdev)
 {
 	netdev->ethtool_ops = &otx2_ethtool_ops;
 }
+
+/* VF's ethtool APIs */
+static void otx2vf_get_drvinfo(struct net_device *netdev,
+			       struct ethtool_drvinfo *info)
+{
+	struct otx2_nic *vf = netdev_priv(netdev);
+
+	strlcpy(info->driver, DRV_VF_NAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_VF_VERSION, sizeof(info->version));
+	strlcpy(info->bus_info, pci_name(vf->pdev), sizeof(info->bus_info));
+}
+
+static void otx2vf_get_strings(struct net_device *netdev, u32 sset, u8 *data)
+{
+	struct otx2_nic *vf = netdev_priv(netdev);
+	int stats;
+
+	if (sset != ETH_SS_STATS)
+		return;
+
+	for (stats = 0; stats < otx2_n_dev_stats; stats++) {
+		memcpy(data, otx2_dev_stats[stats].name, ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
+
+	otx2_get_qset_strings(vf, &data, 0);
+}
+
+static void otx2vf_get_ethtool_stats(struct net_device *netdev,
+				     struct ethtool_stats *stats, u64 *data)
+{
+	struct otx2_nic *vf = netdev_priv(netdev);
+	int stat;
+
+	otx2_get_dev_stats(vf);
+
+	for (stat = 0; stat < otx2_n_dev_stats; stat++) {
+		*data = ((u64 *)&vf->hw.dev_stats)[otx2_dev_stats[stat].index];
+		data++;
+	}
+
+	otx2_get_qset_stats(vf, stats, &data);
+}
+
+static int otx2vf_get_sset_count(struct net_device *netdev, int sset)
+{
+	struct otx2_nic *vf = netdev_priv(netdev);
+
+	if (sset != ETH_SS_STATS)
+		return -EINVAL;
+
+	return otx2_n_dev_stats +
+	       otx2_n_queue_stats * (vf->hw.rx_queues + vf->hw.tx_queues);
+}
+
+static int otx2vf_get_link_ksettings(struct net_device *netdev,
+				     struct ethtool_link_ksettings *cmd)
+{
+	struct otx2_nic *pfvf = netdev_priv(netdev);
+
+	if (is_otx2_lbkvf(pfvf->pdev)) {
+		cmd->base.port = PORT_OTHER;
+		cmd->base.duplex = DUPLEX_FULL;
+		cmd->base.speed = SPEED_100000;
+	} else {
+		return	otx2_get_link_ksettings(netdev, cmd);
+	}
+	return 0;
+}
+static const struct ethtool_ops otx2vf_ethtool_ops = {
+	.get_link		= otx2_get_link,
+	.get_drvinfo		= otx2vf_get_drvinfo,
+	.get_strings		= otx2vf_get_strings,
+	.get_ethtool_stats	= otx2vf_get_ethtool_stats,
+	.get_sset_count		= otx2vf_get_sset_count,
+	.set_channels		= otx2_set_channels,
+	.get_channels		= otx2_get_channels,
+	.get_rxnfc		= otx2vf_get_rxnfc,
+	.set_rxnfc              = otx2vf_set_rxnfc,
+	.get_rxfh_key_size	= otx2_get_rxfh_key_size,
+	.get_rxfh_indir_size	= otx2_get_rxfh_indir_size,
+	.get_rxfh		= otx2_get_rxfh,
+	.set_rxfh		= otx2_set_rxfh,
+	.get_ringparam		= otx2_get_ringparam,
+	.set_ringparam		= otx2_set_ringparam,
+	.get_coalesce		= otx2_get_coalesce,
+	.set_coalesce		= otx2_set_coalesce,
+	.get_pauseparam		= otx2_get_pauseparam,
+	.set_pauseparam		= otx2_set_pauseparam,
+	.get_link_ksettings     = otx2vf_get_link_ksettings,
+};
+
+void otx2vf_set_ethtool_ops(struct net_device *netdev)
+{
+	netdev->ethtool_ops = &otx2vf_ethtool_ops;
+}
+EXPORT_SYMBOL(otx2vf_set_ethtool_ops);

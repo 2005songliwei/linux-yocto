@@ -11,6 +11,9 @@
 #ifndef RVU_STRUCT_H
 #define RVU_STRUCT_H
 
+/* RVU Block revision IDs */
+#define RVU_BLK_RVUM_REVID		0x01
+
 /* RVU Block Address Enumeration */
 enum rvu_block_addr_e {
 	BLKADDR_RVUM		= 0x0ULL,
@@ -57,6 +60,43 @@ enum rvu_af_int_vec_e {
 	RVU_AF_INT_VEC_CNT    = 0x5,
 };
 
+/* NPA Admin function Interrupt Vector Enumeration */
+enum npa_af_int_vec_e {
+	NPA_AF_INT_VEC_RVU	= 0x0,
+	NPA_AF_INT_VEC_GEN	= 0x1,
+	NPA_AF_INT_VEC_AQ_DONE	= 0x2,
+	NPA_AF_INT_VEC_AF_ERR	= 0x3,
+	NPA_AF_INT_VEC_POISON	= 0x4,
+	NPA_AF_INT_VEC_CNT	= 0x5,
+};
+
+/* NIX Admin function Interrupt Vector Enumeration */
+enum nix_af_int_vec_e {
+	NIX_AF_INT_VEC_RVU	= 0x0,
+	NIX_AF_INT_VEC_GEN	= 0x1,
+	NIX_AF_INT_VEC_AQ_DONE	= 0x2,
+	NIX_AF_INT_VEC_AF_ERR	= 0x3,
+	NIX_AF_INT_VEC_POISON	= 0x4,
+	NIX_AF_INT_VEC_CNT	= 0x5,
+};
+
+/* SSO Admin function Interrupt Vector Enumeration */
+enum sso_af_int_vec_e {
+	SSO_AF_INT_VEC_ERR0 = 0x0,
+	SSO_AF_INT_VEC_ERR2 = 0x1,
+	SSO_AF_INT_VEC_RAS  = 0x2,
+	SSO_AF_INT_VEC_CNT  = 0x3,
+};
+
+/* CPT Admin function Interrupt Vector Enumeration */
+enum cpt_af_int_vec_e {
+	CPT_AF_INT_VEC_FLT0	= 0x0,
+	CPT_AF_INT_VEC_FLT1	= 0x1,
+	CPT_AF_INT_VEC_RVU	= 0x2,
+	CPT_AF_INT_VEC_RAS	= 0x3,
+	CPT_AF_INT_VEC_CNT	= 0x4,
+};
+
 /**
  * RVU PF Interrupt Vector Enumeration
  */
@@ -95,6 +135,19 @@ enum npa_aq_instop {
 	NPA_AQ_INSTOP_READ   = 0x3,
 	NPA_AQ_INSTOP_LOCK   = 0x4,
 	NPA_AQ_INSTOP_UNLOCK = 0x5,
+};
+
+/* ALLOC/FREE input queues Enumeration from coprocessors */
+enum npa_inpq {
+	NPA_INPQ_NIX0_RX       = 0x0,
+	NPA_INPQ_NIX0_TX       = 0x1,
+	NPA_INPQ_NIX1_RX       = 0x2,
+	NPA_INPQ_NIX1_TX       = 0x3,
+	NPA_INPQ_SSO           = 0x4,
+	NPA_INPQ_TIM           = 0x5,
+	NPA_INPQ_DPI           = 0x6,
+	NPA_INPQ_AURA_OP       = 0xe,
+	NPA_INPQ_INTERNAL_RSV  = 0xf,
 };
 
 /* NPA admin queue instruction structure */
