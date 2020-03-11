@@ -2322,7 +2322,7 @@ static int dwc3_gadget_ep_reclaim_completed_trb(struct dwc3_ep *dep,
 	    (trb->ctrl & DWC3_TRB_CTRL_IOC))
 		return 1;
 
-	if ((event->status & DEPEVT_STATUS_LST) &&
+	if ((trb->ctrl & DWC3_TRB_CTRL_IOC) ||
 	    (trb->ctrl & DWC3_TRB_CTRL_LST))
 		return 1;
 
