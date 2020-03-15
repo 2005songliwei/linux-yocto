@@ -475,10 +475,6 @@
 	status = "disabled";
 };
 
-&emmc2 {
-	vmmc-supply = <&sd_vcc_reg>;
-};
-
 &phy1 {
 	led-modes = <0x00 0x08>; /* link/activity link */
 };
