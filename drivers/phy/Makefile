@@ -29,3 +29,4 @@ obj-y					+= broadcom/	\
 					   socionext/	\
 					   st/		\
 					   ti/
+obj-$(CONFIG_PHY_XILINX_ZYNQMP)		+= phy-zynqmp.o
