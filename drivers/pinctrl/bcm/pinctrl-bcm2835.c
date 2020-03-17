@@ -350,7 +350,7 @@ static const struct gpio_chip bcm2835_gpio_chip = {
 	.get = bcm2835_gpio_get,
 	.set = bcm2835_gpio_set,
 	.set_config = gpiochip_generic_config,
-	.base = -1,
+	.base = 0,
 	.ngpio = BCM2835_NUM_GPIOS,
 	.can_sleep = false,
 };
@@ -1135,33 +1135,6 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 		raw_spin_lock_init(&pc->irq_lock[i]);
 	}
 
-	girq = &pc->gpio_chip.irq;
-	girq->chip = &bcm2835_gpio_irq_chip;
-	girq->parent_handler = bcm2835_gpio_irq_handler;
-	girq->num_parents = BCM2835_NUM_IRQS;
-	girq->parents = devm_kcalloc(dev, BCM2835_NUM_IRQS,
-				     sizeof(*girq->parents),
-				     GFP_KERNEL);
-	if (!girq->parents)
-		return -ENOMEM;
-	/*
-	 * Use the same handler for all groups: this is necessary
-	 * since we use one gpiochip to cover all lines - the
-	 * irq handler then needs to figure out which group and
-	 * bank that was firing the IRQ and look up the per-group
-	 * and bank data.
-	 */
-	for (i = 0; i < BCM2835_NUM_IRQS; i++)
-		girq->parents[i] = irq_of_parse_and_map(np, i);
-	girq->default_type = IRQ_TYPE_NONE;
-	girq->handler = handle_level_irq;
-
-	err = gpiochip_add_data(&pc->gpio_chip, pc);
-	if (err) {
-		dev_err(dev, "could not add GPIO chip\n");
-		return err;
-	}
-
 	match = of_match_node(bcm2835_pinctrl_match, pdev->dev.of_node);
 	if (match) {
 		bcm2835_pinctrl_desc.confops =
@@ -1169,15 +1142,50 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	pc->pctl_dev = devm_pinctrl_register(dev, &bcm2835_pinctrl_desc, pc);
-	if (IS_ERR(pc->pctl_dev)) {
-		gpiochip_remove(&pc->gpio_chip);
+	if (IS_ERR(pc->pctl_dev))
 		return PTR_ERR(pc->pctl_dev);
-	}
 
 	pc->gpio_range = bcm2835_pinctrl_gpio_range;
 	pc->gpio_range.base = pc->gpio_chip.base;
 	pc->gpio_range.gc = &pc->gpio_chip;
 	pinctrl_add_gpio_range(pc->pctl_dev, &pc->gpio_range);
+
+	girq = &pc->gpio_chip.irq;
+	girq->chip = &bcm2835_gpio_irq_chip;
+	girq->parent_handler = bcm2835_gpio_irq_handler;
+	girq->num_parents = BCM2835_NUM_IRQS;
+	girq->parents = devm_kcalloc(dev, BCM2835_NUM_IRQS,
+				     sizeof(*girq->parents),
+				     GFP_KERNEL);
+	if (!girq->parents) {
+		pinctrl_remove_gpio_range(pc->pctl_dev, &pc->gpio_range);
+		return -ENOMEM;
+	}
+
+	/*
+	 * Use the same handler for all groups: this is necessary
+	 * since we use one gpiochip to cover all lines - the
+	 * irq handler then needs to figure out which group and
+	 * bank that was firing the IRQ and look up the per-group
+	 * and bank data.
+	 */
+	for (i = 0; i < BCM2835_NUM_IRQS; i++) {
+		girq->parents[i] = irq_of_parse_and_map(np, i);
+		if (!girq->parents[i]) {
+			girq->num_parents = i;
+			break;
+		}
+	}
+	girq->default_type = IRQ_TYPE_NONE;
+	girq->handler = handle_level_irq;
+
+	err = devm_gpiochip_add_data(dev, &pc->gpio_chip, pc);
+	if (err) {
+		dev_err(dev, "could not add GPIO chip\n");
+		pinctrl_remove_gpio_range(pc->pctl_dev, &pc->gpio_range);
+		return err;
+	}
+
 
 	return 0;
 }

@@ -18,6 +18,7 @@
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
+#include <drm/drm_drv.h>
 
 #include "vc4_drv.h"
 #include "vc4_regs.h"
@@ -116,6 +117,9 @@ vc4_ctm_commit(struct vc4_dev *vc4, struct drm_atomic_state *state)
 	struct vc4_ctm_state *ctm_state = to_vc4_ctm_state(vc4->ctm_manager.state);
 	struct drm_color_ctm *ctm = ctm_state->ctm;
 
+	if (vc4->firmware_kms)
+		return;
+
 	if (ctm_state->fifo) {
 		HVS_WRITE(SCALER_OLEDCOEF2,
 			  VC4_SET_FIELD(vc4_ctm_s31_32_to_s0_9(ctm->matrix[0]),
@@ -152,7 +156,7 @@ vc4_atomic_complete_commit(struct drm_atomic_state *state)
 	struct vc4_crtc *vc4_crtc;
 	int i;
 
-	for (i = 0; i < dev->mode_config.num_crtc; i++) {
+	for (i = 0; vc4->hvs && i < dev->mode_config.num_crtc; i++) {
 		if (!state->crtcs[i].ptr || !state->crtcs[i].commit)
 			continue;
 
@@ -166,7 +170,8 @@ vc4_atomic_complete_commit(struct drm_atomic_state *state)
 
 	drm_atomic_helper_commit_modeset_disables(dev, state);
 
-	vc4_ctm_commit(vc4, state);
+	if (!vc4->firmware_kms)
+		vc4_ctm_commit(vc4, state);
 
 	drm_atomic_helper_commit_planes(dev, state, 0);
 
@@ -240,7 +245,8 @@ static int vc4_atomic_commit(struct drm_device *dev,
 	 * drm_atomic_helper_setup_commit() from auto-completing
 	 * commit->flip_done.
 	 */
-	state->legacy_cursor_update = false;
+	if (!vc4->firmware_kms)
+		state->legacy_cursor_update = false;
 	ret = drm_atomic_helper_setup_commit(state, nonblock);
 	if (ret)
 		return ret;
@@ -531,12 +537,19 @@ int vc4_kms_load(struct drm_device *dev)
 		return ret;
 	}
 
-	dev->mode_config.max_width = 2048;
-	dev->mode_config.max_height = 2048;
+	if (!drm_core_check_feature(dev, DRIVER_RENDER)) {
+		/* No V3D as part of vc4. Assume this is Pi4. */
+		dev->mode_config.max_width = 7680;
+		dev->mode_config.max_height = 7680;
+	} else {
+		dev->mode_config.max_width = 2048;
+		dev->mode_config.max_height = 2048;
+	}
 	dev->mode_config.funcs = &vc4_mode_funcs;
 	dev->mode_config.preferred_depth = 24;
 	dev->mode_config.async_page_flip = true;
 	dev->mode_config.allow_fb_modifiers = true;
+	dev->mode_config.normalize_zpos = true;
 
 	drm_modeset_lock_init(&vc4->ctm_state_lock);
 
