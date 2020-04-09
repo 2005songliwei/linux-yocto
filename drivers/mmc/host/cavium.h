@@ -28,17 +28,24 @@
 /* Subsystem Device ID */
 #define PCI_SUBSYS_DEVID_8XXX	0xA
 #define PCI_SUBSYS_DEVID_9XXX	0xB
+#define PCI_SUBSYS_DEVID_98XX	0xB1
+#define PCI_SUBSYS_DEVID_96XX	0xB2
 #define PCI_SUBSYS_DEVID_95XX	0xB3
+#define PCI_SUBSYS_DEVID_LOKI	0xB4
+#define PCI_SUBSYS_DEVID_95XXMM	0xB5
 
 /* Chip revision Id */
 #define REV_ID_0 0
+#define REV_ID_1 1
 #define REV_ID_2 2
 
 #define KHZ_400 (400000)
 #define MHZ_26  (26000000)
 #define MHZ_52  (52000000)
 #define MHZ_100 (100000000)
+#define MHZ_112_5 (112500000)
 #define MHZ_150 (150000000)
+#define MHZ_167 (167000000)
 #define MHZ_200 (200000000)
 
 /* octtx2: emmc interface io current drive strength */
@@ -57,8 +64,13 @@
 #define PS_10000		(10 * 1000)
 #define PS_5000			(5000)
 #define PS_2500			(2500)
+#define PS_800			(800)
 #define PS_400			(400)
 #define MAX_NO_OF_TAPS		64
+
+/* Macros to enable/disable clks */
+#define CLK_ON			0
+#define CLK_OFF			1
 
 
 /* DMA register addresses */
@@ -112,13 +124,16 @@ struct cvm_mmc_host {
 	int last_slot;
 	struct clk *clk;
 	int sys_freq;
-
+	int max_freq;
 	bool use_sg;
 	bool has_ciu3;
 	bool powered;
 	bool use_vqmmc; /* must disable slots over switch */
 	bool big_dma_addr;
 	bool need_irq_handler_lock;
+	bool tap_requires_noclk;
+	bool calibrate_glitch;
+	bool cond_clock_glitch;
 	spinlock_t irq_handler_lock;
 	struct semaphore mmc_serializer;
 
@@ -165,6 +180,12 @@ struct cvm_mmc_slot {
 	int bus_id;
 	bool cmd6_pending;
 	u64 want_switch;
+	u32 hs400_tuning_block;		/* Block number used for tuning */
+	bool hs400_tuning_block_present;
+	u32 cmd_out_hs200_dly;		/* Normally 800ps */
+	u32 data_out_hs200_dly;		/* Normally 800ps */
+	u32 cmd_out_hs400_dly;		/* Normally 800ps */
+	u32 data_out_hs400_dly;		/* Normally 400ps */
 };
 
 struct cvm_mmc_cr_type {
@@ -289,6 +310,8 @@ struct cvm_mmc_cr_mods {
 #define MIO_EMM_SWITCH_CLK		GENMASK_ULL(31, 0)
 #define MIO_EMM_SWITCH_CLK_HI		GENMASK_ULL(31, 16)
 #define MIO_EMM_SWITCH_CLK_LO		GENMASK_ULL(15, 0)
+#define MIO_EMM_DEBUG_CLK_DIS		BIT_ULL(20)
+#define MIO_EMM_DEBUG_RDSYNC		BIT_ULL(21)
 
 /* Protoypes */
 irqreturn_t cvm_mmc_interrupt(int irq, void *dev_id);
@@ -319,36 +342,6 @@ static inline bool is_mmc_otx2(struct cvm_mmc_host *host)
 #else
 	return false;
 #endif
-}
-
-static inline bool is_mmc_otx2_A0(struct cvm_mmc_host *host)
-{
-#ifdef CONFIG_ARM64
-	struct pci_dev *pdev = host->pdev;
-	u32 chip_id = (pdev->subsystem_device >> 8) & 0xFF;
-
-	return (pdev->revision == 0x00) &&
-		(chip_id == MRVL_OCTEONTX2_96XX_PARTNUM);
-#else
-	return false;
-#endif
-}
-
-static inline bool is_mmc_otx2_C0(struct cvm_mmc_host *host)
-{
-	struct pci_dev *pdev = host->pdev;
-	u32 chip_id = (pdev->subsystem_device >> 12) & 0xF;
-
-	return (pdev->revision == REV_ID_2) &&
-		(chip_id == PCI_SUBSYS_DEVID_9XXX);
-}
-
-static inline bool is_mmc_95xx(struct cvm_mmc_host *host)
-{
-	struct pci_dev *pdev = host->pdev;
-	u32 chip_id = (pdev->subsystem_device >> 8) & 0xFF;
-
-	return (chip_id == PCI_SUBSYS_DEVID_95XX);
 }
 
 #endif

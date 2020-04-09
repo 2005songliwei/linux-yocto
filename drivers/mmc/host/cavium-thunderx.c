@@ -69,10 +69,10 @@ static void thunder_calibrate_mmc(struct cvm_mmc_host *host)
 		return;
 
 	/* set _DEBUG[CLK_ON]=1 as workaround for clock issue */
-	if (is_mmc_otx2_A0(host) || is_mmc_95xx(host))
+	if (host->cond_clock_glitch)
 		writeq(1, host->base + MIO_EMM_DEBUG(host));
 
-	if (is_mmc_otx2_A0(host)) {
+	if (host->calibrate_glitch) {
 		/*
 		 * Operation of up to 100 MHz may be achieved by skipping the
 		 * steps that establish the tap delays and instead assuming
@@ -138,6 +138,9 @@ static void thunder_calibrate_mmc(struct cvm_mmc_host *host)
 			how = "calibrated";
 		}
 
+		/* Reset eMMC subsystem */
+		writeq(0, host->base + MIO_EMM_CFG(host));
+		udelay(1);
 		/* restore old state */
 		writeq(emm_cfg, host->base + MIO_EMM_CFG(host));
 		mdelay(1);
@@ -150,7 +153,6 @@ static void thunder_calibrate_mmc(struct cvm_mmc_host *host)
 		writeq(emm_switch, host->base + MIO_EMM_SWITCH(host));
 		writeq(emm_io_ctl, host->base + MIO_EMM_IO_CTL(host));
 		mdelay(1);
-
 	}
 
 	/*
@@ -161,7 +163,7 @@ static void thunder_calibrate_mmc(struct cvm_mmc_host *host)
 	 */
 	ps = (delay * PS_10000) / TOTAL_NO_OF_TAPS;
 	if (host->per_tap_delay != ps) {
-		dev_info(host->dev, "%s delay:%d per_tap_delay:%dpS\n",
+		dev_info(host->dev, "%s delay:%d per-tap delay:%dpS\n",
 			how, delay, ps);
 		host->per_tap_delay = ps;
 		host->delay_logged = 0;
@@ -176,6 +178,8 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	struct device_node *child_node;
 	struct cvm_mmc_host *host;
 	int ret, i = 0;
+	u8 chip_id;
+	u8 rev;
 
 	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
@@ -226,6 +230,41 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	if (ret)
 		goto error;
 
+	rev = pdev->revision;
+	chip_id = (pdev->subsystem_device >> 8) & 0xff;
+	switch (chip_id) {
+	case PCI_SUBSYS_DEVID_96XX:
+		if (rev == REV_ID_0) {
+			host->calibrate_glitch = true;
+			host->cond_clock_glitch = true;
+			host->max_freq = MHZ_100;
+		} else if (rev == REV_ID_1) {
+			host->cond_clock_glitch = true;
+			host->max_freq = MHZ_167;
+		} else if (rev == REV_ID_2) {
+			host->tap_requires_noclk = true;
+			host->max_freq = MHZ_112_5;
+		} else if (rev > REV_ID_2) {
+			host->tap_requires_noclk = true;
+			host->max_freq = MHZ_200;
+		}
+		break;
+	case PCI_SUBSYS_DEVID_95XXMM:
+	case PCI_SUBSYS_DEVID_98XX:
+		host->tap_requires_noclk = true;
+		host->max_freq = MHZ_200;
+		break;
+	case PCI_SUBSYS_DEVID_95XX:
+		if (rev == REV_ID_0)
+			host->cond_clock_glitch = true;
+		host->max_freq = MHZ_167;
+		break;
+	case PCI_SUBSYS_DEVID_LOKI:
+		host->max_freq = MHZ_167;
+		break;
+	default:
+		break;
+	}
 	/*
 	 * Clear out any pending interrupts that may be left over from
 	 * bootloader. Writing 1 to the bits clears them.

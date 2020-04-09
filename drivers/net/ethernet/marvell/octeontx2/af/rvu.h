@@ -621,6 +621,7 @@ int rvu_cgx_start_stop_io(struct rvu *rvu, u16 pcifunc, bool start);
 int rvu_cgx_nix_cuml_stats(struct rvu *rvu, void *cgxd, int lmac_id, int index,
 			   int rxtxflag, u64 *stat);
 bool is_cgx_config_permitted(struct rvu *rvu, u16 pcifunc);
+bool rvu_cgx_is_pkind_config_permitted(struct rvu *rvu, u16 pcifunc);
 
 /* SSO APIs */
 int rvu_sso_init(struct rvu *rvu);
@@ -691,6 +692,9 @@ int npc_get_bank(struct npc_mcam *mcam, int index);
 void npc_mcam_enable_flows(struct rvu *rvu, u16 target);
 void npc_enable_mcam_entry(struct rvu *rvu, struct npc_mcam *mcam,
 			   int blkaddr, int index, bool enable);
+void npc_read_mcam_entry(struct rvu *rvu, struct npc_mcam *mcam,
+			 int blkaddr, u16 src,
+			 struct mcam_entry *entry, u8 *intf, u8 *ena);
 
 /* CPT APIs */
 int rvu_cpt_init(struct rvu *rvu);
@@ -733,4 +737,6 @@ int rvu_tim_lookup_rsrc(struct rvu *rvu, struct rvu_block *block,
 int rvu_npc_get_tx_nibble_cfg(struct rvu *rvu, u64 nibble_ena);
 bool is_parse_nibble_config_valid(struct rvu *rvu,
 				  struct npc_mcam_kex *mcam_kex);
+int rvu_npc_set_parse_mode(struct rvu *rvu, u16 pcifunc, u64 mode, u8 dir,
+			   u64 pkind);
 #endif /* RVU_H */
