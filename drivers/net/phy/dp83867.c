@@ -27,6 +27,7 @@
 #define DP83867_CFG3		0x1e
 
 /* Extended Registers */
+#define DP83867_FLD_THR_CFG	0x002e
 #define DP83867_CFG4		0x0031
 #define DP83867_CFG4_SGMII_ANEG_MASK (BIT(5) | BIT(6))
 #define DP83867_CFG4_SGMII_ANEG_TIMER_11MS   (3 << 5)
@@ -77,6 +78,7 @@
 #define DP83867_STRAP_STS2_CLK_SKEW_RX_MASK	GENMASK(2, 0)
 #define DP83867_STRAP_STS2_CLK_SKEW_RX_SHIFT	0
 #define DP83867_STRAP_STS2_CLK_SKEW_NONE	BIT(2)
+#define DP83867_STRAP_STS2_STRAP_FLD		BIT(10)
 
 /* PHY CTRL bits */
 #define DP83867_PHYCR_FIFO_DEPTH_SHIFT		14
@@ -130,6 +132,9 @@
 #define DP83867_CFG4_PORT_MIRROR_EN              BIT(0)
 /* SGMIICTL1 bits */
 #define DP83867_SGMIICLK_EN			BIT(14)
+
+/* FLD_THR_CFG */
+#define DP83867_FLD_THR_CFG_ENERGY_LOST_THR_MASK	0x7
 
 enum {
 	DP83867_PORT_MIRROING_KEEP,
@@ -349,6 +354,20 @@ static int dp83867_config_init(struct phy_device *phydev)
 		val = phy_read_mmd(phydev, DP83867_DEVADDR, DP83867_CFG4);
 		val &= ~BIT(7);
 		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_CFG4, val);
+	}
+
+	bs = phy_read_mmd(phydev, DP83867_DEVADDR, DP83867_STRAP_STS2);
+	if (bs & DP83867_STRAP_STS2_STRAP_FLD) {
+		/* When using strap to enable FLD, the ENERGY_LOST_FLD_THR will
+		 * be set to 0x2. This may causes the PHY link to be unstable -
+		 * the default value 0x1 need to be restored.
+		 */
+		ret = phy_modify_mmd(phydev, DP83867_DEVADDR,
+				     DP83867_FLD_THR_CFG,
+				     DP83867_FLD_THR_CFG_ENERGY_LOST_THR_MASK,
+				     0x1);
+		if (ret)
+			return ret;
 	}
 
 	if (phy_interface_is_rgmii(phydev)) {
