@@ -1142,7 +1142,7 @@ static int imx_ldb_bind(struct device *dev, struct device *master, void *data)
 			of_match_device(imx_ldb_dt_ids, dev);
 	const struct devtype *devtype = of_id->data;
 	struct device_node *auxldb_np = NULL, *child;
-	struct imx_ldb *imx_ldb;
+	struct imx_ldb *imx_ldb = dev_get_drvdata(dev);
 	int dual;
 	int ret;
 	int i;
@@ -1447,19 +1447,9 @@ static void imx_ldb_unbind(struct device *dev, struct device *master,
 		if (channel->panel)
 			drm_panel_detach(channel->panel);
 
-		/* make sure the connector exists, and then cleanup */
-		if (channel->connector.dev)
-			imx_drm_connector_destroy(&channel->connector);
-
-		/* make sure the encoder exists, and then cleanup */
-		if (channel->encoder.dev)
-			imx_drm_encoder_destroy(&channel->encoder);
-
 		kfree(channel->edid);
 		i2c_put_adapter(channel->ddc);
 	}
-
-	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_ops imx_ldb_ops = {
