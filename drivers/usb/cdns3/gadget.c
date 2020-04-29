@@ -2075,6 +2075,8 @@ static void cdns3_gadget_config(struct cdns3_device *priv_dev)
 	else
 		priv_dev->gadget.sg_supported = 0;
 
+	/*  keep Fast Access bit */
+	writel(PUSB_PWR_FST_REG_ACCESS, &priv_dev->regs->usb_pwr);
 	cdns3_gadget_pullup(&priv_dev->gadget, 1);
 }
 
@@ -2142,6 +2144,7 @@ static int cdns3_gadget_udc_stop(struct usb_gadget *gadget)
 
 	/* disable interrupt for device */
 	writel(0, &priv_dev->regs->usb_ien);
+	writel(0, &priv_dev->regs->usb_pwr);
 	writel(USB_CONF_DEVDS, &priv_dev->regs->usb_conf);
 
 	return ret;
