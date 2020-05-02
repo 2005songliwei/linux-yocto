@@ -193,6 +193,8 @@ void dump_stack_print_info(const char *log_lvl);
 void show_regs_print_info(const char *log_lvl);
 extern asmlinkage void dump_stack(void) __cold;
 struct wait_queue_head *printk_wait_queue(void);
+extern void printk_safe_flush(void);
+extern void printk_safe_flush_on_panic(void);
 #else
 static inline __printf(1, 0)
 int vprintk(const char *s, va_list args)
@@ -254,6 +256,14 @@ static inline void show_regs_print_info(const char *log_lvl)
 }
 
 static inline void dump_stack(void)
+{
+}
+
+static inline void printk_safe_flush(void)
+{
+}
+
+static inline void printk_safe_flush_on_panic(void)
 {
 }
 #endif
