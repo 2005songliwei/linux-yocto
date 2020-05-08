@@ -24,7 +24,7 @@
 
 #define	OTX2_ETH_HLEN		(VLAN_ETH_HLEN + VLAN_HLEN)
 #define	OTX2_MIN_MTU		64
-#define	OTX2_MAX_MTU		(9212 - OTX2_ETH_HLEN)
+#define OTX2_MAX_MTU		(9204 - OTX2_ETH_HLEN)
 
 #define OTX2_MAX_GSO_SEGS	255
 #define OTX2_MAX_FRAGS_IN_SQE	9
@@ -91,6 +91,7 @@ struct otx2_snd_queue {
 	struct qmem		*sqe;
 	struct qmem		*tso_hdrs;
 	struct sg_list		*sg;
+	struct qmem		*timestamps;
 	struct queue_stats	stats;
 	u16			sqb_count;
 	u64			*sqb_ptrs;

@@ -118,20 +118,29 @@ static int otx2vf_process_mbox_msg_up(struct otx2_nic *vf,
 	}
 
 	switch (req->id) {
-	case MBOX_MSG_CGX_LINK_EVENT:
-		rsp = (struct msg_rsp *)otx2_mbox_alloc_msg(
-						&vf->mbox.mbox_up, 0,
-						sizeof(struct msg_rsp));
-		if (!rsp)
-			return -ENOMEM;
-
-		rsp->hdr.id = MBOX_MSG_CGX_LINK_EVENT;
-		rsp->hdr.sig = OTX2_MBOX_RSP_SIG;
-		rsp->hdr.pcifunc = 0;
-		rsp->hdr.rc = 0;
-		err = otx2_mbox_up_handler_cgx_link_event(
-				vf, (struct cgx_link_info_msg *)req, rsp);
-		return err;
+#define M(_name, _id, _fn_name, _req_type, _rsp_type)			\
+	case _id: {							\
+		struct _rsp_type *rsp;					\
+		int err;						\
+									\
+		rsp = (struct _rsp_type *)otx2_mbox_alloc_msg(		\
+			&vf->mbox.mbox_up, 0,				\
+			sizeof(struct _rsp_type));			\
+		if (!rsp)						\
+			return -ENOMEM;					\
+									\
+		rsp->hdr.id = _id;					\
+		rsp->hdr.sig = OTX2_MBOX_RSP_SIG;			\
+		rsp->hdr.pcifunc = 0;					\
+		rsp->hdr.rc = 0;					\
+									\
+		err = otx2_mbox_up_handler_ ## _fn_name(		\
+			vf, (struct _req_type *)req, rsp);		\
+		return err;						\
+	}
+MBOX_UP_CGX_MESSAGES
+#undef M
+		break;
 	default:
 		otx2_reply_invalid_msg(&vf->mbox.mbox_up, 0, 0, req->id);
 		return -ENODEV;
@@ -414,6 +423,13 @@ static void otx2vf_reset_task(struct work_struct *work)
 	rtnl_unlock();
 }
 
+static netdev_features_t
+otx2_features_check(struct sk_buff *skb, struct net_device *dev,
+		    netdev_features_t features)
+{
+	return features;
+}
+
 static const struct net_device_ops otx2vf_netdev_ops = {
 	.ndo_open = otx2vf_open,
 	.ndo_stop = otx2vf_stop,
@@ -422,6 +438,7 @@ static const struct net_device_ops otx2vf_netdev_ops = {
 	.ndo_change_mtu = otx2vf_change_mtu,
 	.ndo_get_stats64 = otx2_get_stats64,
 	.ndo_tx_timeout = otx2_tx_timeout,
+	.ndo_features_check = otx2_features_check,
 };
 
 static int otx2vf_realloc_msix_vectors(struct otx2_nic *vf)
@@ -487,6 +504,9 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	vf->pdev = pdev;
 	vf->dev = dev;
 	vf->iommu_domain = iommu_get_domain_for_dev(dev);
+	if (vf->iommu_domain)
+		vf->iommu_domain_type =
+			((struct iommu_domain *)vf->iommu_domain)->type;
 
 	vf->flags |= OTX2_FLAG_INTF_DOWN;
 	hw = &vf->hw;
@@ -544,6 +564,12 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	otx2_setup_dev_hw_settings(vf);
 
+	err = otx2smqvf_probe(vf);
+	if (!err)
+		return 0;
+	else if (err == -EINVAL)
+		goto err_detach_rsrc;
+
 	/* Assign default mac address */
 	otx2_get_mac_from_af(netdev);
 
@@ -551,7 +577,11 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			      NETIF_F_IPV6_CSUM | NETIF_F_RXHASH |
 			      NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6;
 	netdev->features = netdev->hw_features;
-
+	/* Support TSO on tag interface */
+	netdev->vlan_features |= netdev->features;
+	netdev->hw_features  |= NETIF_F_HW_VLAN_CTAG_TX |
+				NETIF_F_HW_VLAN_STAG_TX;
+	netdev->features |= netdev->hw_features;
 	netdev->gso_max_segs = OTX2_MAX_GSO_SEGS;
 	netdev->watchdog_timeo = OTX2_TX_TIMEOUT;
 
@@ -562,6 +592,15 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	netdev->max_mtu = OTX2_MAX_MTU;
 
 	INIT_WORK(&vf->reset_task, otx2vf_reset_task);
+
+	if (is_otx2_lbkvf(vf->pdev)) {
+		int n;
+
+		n = (vf->pcifunc >> RVU_PFVF_FUNC_SHIFT) & RVU_PFVF_FUNC_MASK;
+		/* Need to subtract 1 to get proper VF number */
+		n -= 1;
+		snprintf(netdev->name, sizeof(netdev->name), "lbk%d", n);
+	}
 
 	/* To distinguish, for LBK VFs set netdev name explicitly */
 	if (is_otx2_lbkvf(vf->pdev)) {
@@ -612,6 +651,9 @@ static void otx2vf_remove(struct pci_dev *pdev)
 		return;
 
 	vf = netdev_priv(netdev);
+
+	if (otx2smqvf_remove(vf))
+		unregister_netdev(netdev);
 
 	otx2vf_disable_mbox_intr(vf);
 

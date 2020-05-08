@@ -359,7 +359,7 @@ static void nicvf_free_rbdr(struct nicvf *nic, struct rbdr *rbdr)
 	/* Release additional page references held for recycling */
 	head = 0;
 	while (head < rbdr->pgcnt) {
-		pgcache = &rbdr->pgcache[head];
+		pgcache = &rbdr->pgcache[head++];
 		if (pgcache->page && page_ref_count(pgcache->page) != 0) {
 			if (rbdr->is_xdp) {
 				page_ref_sub(pgcache->page,
@@ -367,9 +367,8 @@ static void nicvf_free_rbdr(struct nicvf *nic, struct rbdr *rbdr)
 			}
 			put_page(pgcache->page);
 		}
-		head++;
 	}
-
+	kfree(rbdr->pgcache);
 	/* Free RBDR ring */
 	nicvf_free_q_desc_mem(nic, &rbdr->dmem);
 }

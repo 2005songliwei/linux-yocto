@@ -16,6 +16,7 @@
 #include "otx2_common.h"
 #include "otx2_struct.h"
 #include "otx2_txrx.h"
+#include "otx2_ptp.h"
 
 #define CQE_ADDR(CQ, idx) ((CQ)->cqe_base + ((CQ)->cqe_size * (idx)))
 
@@ -83,16 +84,37 @@ static void otx2_snd_pkt_handler(struct otx2_nic *pfvf,
 	struct nix_send_comp_s *snd_comp = &cqe->comp;
 	struct sk_buff *skb = NULL;
 	struct sg_list *sg;
+	int sqe_id;
 
 	if (unlikely(snd_comp->status) && netif_msg_tx_err(pfvf))
 		net_err_ratelimited("%s: TX%d: Error in send CQ status:%x\n",
 				    pfvf->netdev->name, cq->cint_idx,
 				    snd_comp->status);
 
-	sg = &sq->sg[snd_comp->sqe_id];
+	sqe_id = snd_comp->sqe_id;
+	sg = &sq->sg[sqe_id];
+
 	skb = (struct sk_buff *)sg->skb;
 	if (unlikely(!skb))
 		return;
+
+	if (skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS) {
+		u64 timestamp = ((u64 *)sq->timestamps->base)[sqe_id];
+
+		if (timestamp != 1) {
+			u64 tsns;
+			int err;
+
+			err = otx2_ptp_tstamp2time(pfvf, timestamp, &tsns);
+			if (!err) {
+				struct skb_shared_hwtstamps ts;
+
+				memset(&ts, 0, sizeof(ts));
+				ts.hwtstamp = ns_to_ktime(tsns);
+				skb_tstamp_tx(skb, &ts);
+			}
+		}
+	}
 
 	*tx_bytes += skb->len;
 	(*tx_pkts)++;
@@ -101,19 +123,69 @@ static void otx2_snd_pkt_handler(struct otx2_nic *pfvf,
 	sg->skb = (u64)NULL;
 }
 
+static inline void otx2_set_rxtstamp(struct otx2_nic *pfvf,
+				     struct sk_buff *skb, void *data)
+{
+	u64 tsns;
+	int err;
+
+	if (!(pfvf->flags & OTX2_FLAG_RX_TSTAMP_ENABLED))
+		return;
+
+	/* The first 8 bytes is the timestamp */
+	err = otx2_ptp_tstamp2time(pfvf, be64_to_cpu(*(u64 *)data), &tsns);
+	if (err)
+		return;
+
+	skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(tsns);
+}
+
 static void otx2_skb_add_frag(struct otx2_nic *pfvf, struct sk_buff *skb,
-			      u64 iova, int len)
+			      u64 iova, int len, struct nix_rx_parse_s *parse)
 {
 	struct page *page;
+	int off = 0;
 	void *va;
 
 	va = phys_to_virt(otx2_iova_to_phys(pfvf->iommu_domain, iova));
+
+	if (likely(!skb_shinfo(skb)->nr_frags)) {
+		/* Check if data starts at some nonzero offset
+		 * from the start of the buffer.  For now the
+		 * only possible offset is 8 bytes in the case
+		 * where packet is prepended by a timestamp.
+		 */
+		if (parse->laptr) {
+			otx2_set_rxtstamp(pfvf, skb, va);
+			off = OTX2_HW_TIMESTAMP_LEN;
+		}
+		off += pfvf->xtra_hdr;
+	}
+
 	page = virt_to_page(va);
 	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, page,
-			va - page_address(page), len, pfvf->rbsize);
+			va - page_address(page) + off, len - off, pfvf->rbsize);
 
 	otx2_dma_unmap_page(pfvf, iova - OTX2_HEAD_ROOM,
 			    pfvf->rbsize, DMA_FROM_DEVICE);
+}
+
+static inline void otx2_set_taginfo(struct nix_rx_parse_s *parse,
+				    struct sk_buff *skb)
+{
+	/* Check if VLAN is present, captured and stripped from packet */
+	if (parse->vtag0_valid && parse->vtag0_gone) {
+		skb_frag_t *frag0 = &skb_shinfo(skb)->frags[0];
+
+		/* Is the tag captured STAG or CTAG ? */
+		if (((struct ethhdr *)skb_frag_address(frag0))->h_proto ==
+		    htons(ETH_P_8021Q))
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021AD),
+					       parse->vtag0_tci);
+		else
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+					       parse->vtag0_tci);
+	}
 }
 
 static void otx2_set_rxhash(struct otx2_nic *pfvf,
@@ -239,7 +311,7 @@ static void otx2_rcv_pkt_handler(struct otx2_nic *pfvf,
 	if (unlikely(!skb))
 		return;
 
-	otx2_skb_add_frag(pfvf, skb, cqe->sg.seg_addr, cqe->sg.seg_size);
+	otx2_skb_add_frag(pfvf, skb, cqe->sg.seg_addr, cqe->sg.seg_size, parse);
 	cq->pool_ptrs++;
 
 	otx2_set_rxhash(pfvf, cqe, skb);
@@ -247,6 +319,8 @@ static void otx2_rcv_pkt_handler(struct otx2_nic *pfvf,
 	skb_record_rx_queue(skb, cq->cq_idx);
 	if (pfvf->netdev->features & NETIF_F_RXCSUM)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	otx2_set_taginfo(parse, skb);
 
 	napi_gro_frags(napi);
 }
@@ -267,6 +341,7 @@ static int otx2_rx_napi_handler(struct otx2_nic *pfvf,
 				return 0;
 			break;
 		}
+
 		cq->cq_head++;
 		cq->cq_head &= (cq->cqe_cnt - 1);
 
@@ -483,8 +558,38 @@ static void otx2_sqe_add_ext(struct otx2_nic *pfvf, struct otx2_snd_queue *sq,
 			ipv6_hdr(skb)->payload_len =
 				htons(ext->lso_sb - skb_network_offset(skb));
 		}
+	} else if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
+		ext->tstmp = 1;
 	}
+
+#define OTX2_VLAN_PTR_OFFSET     (ETH_HLEN - ETH_TLEN)
+	if (skb_vlan_tag_present(skb)) {
+		if (skb->vlan_proto == htons(ETH_P_8021Q)) {
+			ext->vlan1_ins_ena = 1;
+			ext->vlan1_ins_ptr = OTX2_VLAN_PTR_OFFSET;
+			ext->vlan1_ins_tci = skb_vlan_tag_get(skb);
+		} else if (skb->vlan_proto == htons(ETH_P_8021AD)) {
+			ext->vlan0_ins_ena = 1;
+			ext->vlan0_ins_ptr = OTX2_VLAN_PTR_OFFSET;
+			ext->vlan0_ins_tci = skb_vlan_tag_get(skb);
+		}
+	}
+
 	*offset += sizeof(*ext);
+}
+
+static void otx2_sqe_add_mem(struct otx2_snd_queue *sq, int *offset,
+			     int alg, u64 iova)
+{
+	struct nix_sqe_mem_s *mem;
+
+	mem = (struct nix_sqe_mem_s *)(sq->sqe_base + *offset);
+	mem->subdc = NIX_SUBDC_MEM;
+	mem->alg = alg;
+	mem->wmem = 1; /* wait for the memory operation */
+	mem->addr = iova;
+
+	*offset += sizeof(*mem);
 }
 
 /* Add SQE header subdescriptor structure */
@@ -709,6 +814,8 @@ static bool is_hw_tso_supported(struct otx2_nic *pfvf,
 	if (!pfvf->hw.hw_tso)
 		return false;
 
+	if (is_dev_post_96xx_C0(pfvf->pdev))
+		return true;
 	/* HW has an issue due to which when the payload of the last LSO
 	 * segment is shorter than 16 bytes, some header fields may not
 	 * be correctly modified, hence don't offload such TSO segments.
@@ -735,6 +842,21 @@ static int otx2_get_sqe_count(struct otx2_nic *pfvf, struct sk_buff *skb)
 
 	/* SW TSO */
 	return skb_shinfo(skb)->gso_segs;
+}
+
+static inline void otx2_set_txtstamp(struct otx2_nic *pfvf, struct sk_buff *skb,
+				     struct otx2_snd_queue *sq, int *offset)
+{
+	u64 iova;
+
+	if (!skb_shinfo(skb)->gso_size &&
+	    skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
+		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+		iova = sq->timestamps->iova + (sq->head * sizeof(u64));
+		otx2_sqe_add_mem(sq, offset, NIX_SENDMEMALG_E_SETTSTMP, iova);
+	} else {
+		skb_tx_timestamp(skb);
+	}
 }
 
 bool otx2_sq_append_skb(struct net_device *netdev, struct otx2_snd_queue *sq,
@@ -769,6 +891,9 @@ bool otx2_sq_append_skb(struct net_device *netdev, struct otx2_snd_queue *sq,
 	}
 
 	if (skb_shinfo(skb)->gso_size && !is_hw_tso_supported(pfvf, skb)) {
+		/* Insert vlan tag before giving pkt to tso */
+		if (skb_vlan_tag_present(skb))
+			skb = __vlan_hwaccel_push_inside(skb);
 		otx2_sq_append_tso(pfvf, sq, skb, qidx);
 		return true;
 	}
@@ -789,6 +914,8 @@ bool otx2_sq_append_skb(struct net_device *netdev, struct otx2_snd_queue *sq,
 		otx2_dma_unmap_skb_frags(pfvf, &sq->sg[sq->head]);
 		return false;
 	}
+
+	otx2_set_txtstamp(pfvf, skb, sq, &offset);
 
 	sqe_hdr->sizem1 = (offset / 16) - 1;
 

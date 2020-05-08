@@ -60,6 +60,22 @@ void otx2_update_lmac_stats(struct otx2_nic *pfvf)
 	mutex_unlock(&pfvf->mbox.lock);
 }
 
+void otx2_update_lmac_fec_stats(struct otx2_nic *pfvf)
+{
+	struct msg_req *req;
+
+	if (!netif_running(pfvf->netdev))
+		return;
+	mutex_lock(&pfvf->mbox.lock);
+	req = otx2_mbox_alloc_msg_cgx_fec_stats(&pfvf->mbox);
+	if (!req) {
+		mutex_unlock(&pfvf->mbox.lock);
+		return;
+	}
+	otx2_sync_mbox_msg(&pfvf->mbox);
+	mutex_unlock(&pfvf->mbox.lock);
+}
+
 int otx2_update_rq_stats(struct otx2_nic *pfvf, int qidx)
 {
 	struct otx2_rcv_queue *rq = &pfvf->qset.rq[qidx];
@@ -191,9 +207,12 @@ int otx2_set_mac_address(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	if (!otx2_hw_set_mac_addr(pfvf, addr->sa_data))
+	if (!otx2_hw_set_mac_addr(pfvf, addr->sa_data)) {
 		memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
-	else
+		/* update dmac field in vlan offload rule */
+		if (pfvf->flags & OTX2_FLAG_RX_VLAN_SUPPORT)
+			otx2_install_rxvlan_offload_flow(pfvf);
+	} else
 		return -EPERM;
 
 	return 0;
@@ -212,7 +231,8 @@ int otx2_hw_set_mtu(struct otx2_nic *pfvf, int mtu)
 		return -ENOMEM;
 	}
 
-	pfvf->max_frs = mtu +  OTX2_ETH_HLEN;
+	/* Add EDSA/HIGIG2 header len to maxlen */
+	pfvf->max_frs = mtu +  OTX2_ETH_HLEN + pfvf->addl_mtu;
 	req->maxlen = pfvf->max_frs;
 
 	err = otx2_sync_mbox_msg(&pfvf->mbox);
@@ -675,6 +695,13 @@ static int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura)
 	sq->sg = kcalloc(qset->sqe_cnt, sizeof(struct sg_list), GFP_KERNEL);
 	if (!sq->sg)
 		return -ENOMEM;
+
+	if (pfvf->ptp) {
+		err = qmem_alloc(pfvf->dev, &sq->timestamps, qset->sqe_cnt,
+				 sizeof(*sq->timestamps));
+		if (err)
+			return err;
+	}
 
 	sq->head = 0;
 	sq->sqe_per_sqb = (pfvf->hw.sqb_size / sq->sqe_size) - 1;
@@ -1384,6 +1411,13 @@ void mbox_handler_cgx_stats(struct otx2_nic *pfvf,
 		pfvf->hw.cgx_rx_stats[id] = rsp->rx_stats[id];
 	for (id = 0; id < CGX_TX_STATS_COUNT; id++)
 		pfvf->hw.cgx_tx_stats[id] = rsp->tx_stats[id];
+}
+
+void mbox_handler_cgx_fec_stats(struct otx2_nic *pfvf,
+				struct cgx_fec_stats_rsp *rsp)
+{
+		pfvf->hw.cgx_fec_corr_blks += rsp->fec_corr_blks;
+		pfvf->hw.cgx_fec_uncorr_blks += rsp->fec_uncorr_blks;
 }
 
 void mbox_handler_nix_txsch_alloc(struct otx2_nic *pf,

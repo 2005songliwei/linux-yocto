@@ -3670,7 +3670,7 @@ L:	linux-btrfs@vger.kernel.org
 S:	Maintained
 W:	http://btrfs.wiki.kernel.org/
 Q:	http://patchwork.kernel.org/project/linux-btrfs/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/mason/linux-btrfs.git
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/kdave/linux.git
 F:	Documentation/filesystems/btrfs.rst
 F:	fs/btrfs/
 F:	include/linux/btrfs*
@@ -7122,6 +7122,11 @@ F:	drivers/net/wan/pc300too.c
 F:	drivers/net/wan/pci200syn.c
 F:	drivers/net/wan/wanxl*
 
+GENERIC I2C GPIO DRIVER
+M:	Peter Swain <pswain@marvell.com>
+S:	Maintained
+F:	drivers/gpio/gpio-i2c.c
+
 GENERIC INCLUDE/ASM HEADER FILES
 M:	Arnd Bergmann <arnd@arndb.de>
 L:	linux-arch@vger.kernel.org
@@ -10150,7 +10155,7 @@ M:	Arnaud Ebalard <arno@natisbad.org>
 M:	Srujana Challa <schalla@marvell.com>
 L:	linux-crypto@vger.kernel.org
 S:	Maintained
-F:	drivers/crypto/marvell/
+F:	drivers/crypto/marvell/cesa/
 
 MARVELL GIGABIT ETHERNET DRIVERS (skge/sky2)
 M:	Mirko Lindner <mlindner@marvell.com>
