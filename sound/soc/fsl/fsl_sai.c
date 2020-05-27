@@ -1389,6 +1389,9 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	if (sai->soc->reg_offset == 8)
 		fsl_sai_regmap_config = fsl_sai_v3_regmap_config;
 
+	memcpy(&sai->cpu_dai_drv, &fsl_sai_dai_template,
+	       sizeof(fsl_sai_dai_template));
+
 	sai->regmap = devm_regmap_init_mmio_clk(&pdev->dev,
 			NULL, base, &fsl_sai_regmap_config);
 	if (IS_ERR(sai->regmap)) {
