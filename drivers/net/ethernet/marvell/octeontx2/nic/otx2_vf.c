@@ -108,9 +108,6 @@ static void otx2vf_vfaf_mbox_handler(struct work_struct *work)
 static int otx2vf_process_mbox_msg_up(struct otx2_nic *vf,
 				      struct mbox_msghdr *req)
 {
-	struct msg_rsp *rsp;
-	int err;
-
 	/* Check if valid, if not reply with a invalid msg */
 	if (req->sig != OTX2_MBOX_REQ_SIG) {
 		otx2_reply_invalid_msg(&vf->mbox.mbox_up, 0, 0, req->id);
