@@ -329,7 +329,7 @@ void of_node_release(struct kobject *kobj)
 
 	/* We should never be releasing nodes that haven't been detached. */
 	if (!of_node_check_flag(node, OF_DETACHED)) {
-		pr_err("ERROR: Bad of_node_put() on %pOF\n", node);
+		pr_err("ERROR: Bad of_node_put() on %s\n", node->full_name);
 		dump_stack();
 		return;
 	}
@@ -340,8 +340,8 @@ void of_node_release(struct kobject *kobj)
 
 		if (!of_node_check_flag(node, OF_OVERLAY_FREE_CSET)) {
 			/* premature refcount of zero, do not free memory */
-			pr_err("ERROR: memory leak before free overlay changeset,  %pOF\n",
-			       node);
+			pr_err("ERROR: memory leak before free overlay changeset,  %s\n",
+			       node->full_name);
 			return;
 		}
 
@@ -351,8 +351,8 @@ void of_node_release(struct kobject *kobj)
 		 * yet been removed, or by a non-overlay mechanism.
 		 */
 		if (node->properties)
-			pr_err("ERROR: %s(), unexpected properties in %pOF\n",
-			       __func__, node);
+			pr_err("ERROR: %s(), unexpected properties in %s\n",
+			       __func__, node->full_name);
 	}
 
 	property_list_free(node->properties);
