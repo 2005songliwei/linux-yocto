@@ -56,6 +56,7 @@ dtb-$(CONFIG_ARCH_MXC) += imx8qxp-mek-dom0.dtb imx8qxp-mek-root.dtb \
 dtb-$(CONFIG_ARCH_MXC) += imx8dxl-evk.dtb imx8dxl-evk-rpmsg.dtb \
 			  imx8dxl-evk-enet0.dtb imx8dxl-evk-pcie.dtb imx8dxl-evk-pcie.dtb \
 			  imx8dxl-evk-lpspi-slave.dtb \
+			  imx8dxl-evk-pcie-ep.dtb \
 			  imx8dxl-ddr3-val.dtb imx8dxl-evk-root.dtb imx8dxl-evk-inmate.dtb
 dtb-$(CONFIG_ARCH_MXC) += imx8mm-evk-ak4497.dtb imx8mm-evk-ak5558.dtb imx8mm-evk-audio-tdm.dtb
 dtb-$(CONFIG_ARCH_MXC) += imx8mm-evk-8mic-revE.dtb imx8mm-evk-8mic-swpdm.dtb
