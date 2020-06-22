@@ -54,20 +54,22 @@
 #define RVU_PRIV_PFX_MSIX_CFG(a)            (0x8000110 | (a) << 16)
 #define RVU_PRIV_PFX_ID_CFG(a)              (0x8000120 | (a) << 16)
 #define RVU_PRIV_PFX_INT_CFG(a)             (0x8000200 | (a) << 16)
-#define RVU_PRIV_PFX_NIX0_CFG               (0x8000300)
+#define RVU_PRIV_PFX_NIXX_CFG(a)            (0x8000300 | (a) << 3)
 #define RVU_PRIV_PFX_NPA_CFG		    (0x8000310)
 #define RVU_PRIV_PFX_SSO_CFG                (0x8000320)
 #define RVU_PRIV_PFX_SSOW_CFG               (0x8000330)
 #define RVU_PRIV_PFX_TIM_CFG                (0x8000340)
-#define RVU_PRIV_PFX_CPT0_CFG               (0x8000350)
+#define RVU_PRIV_PFX_CPTX_CFG(a)            (0x8000350 | (a) << 3)
 #define RVU_PRIV_BLOCK_TYPEX_REV(a)         (0x8000400 | (a) << 3)
 #define RVU_PRIV_HWVFX_INT_CFG(a)           (0x8001280 | (a) << 16)
-#define RVU_PRIV_HWVFX_NIX0_CFG             (0x8001300)
+#define RVU_PRIV_HWVFX_NIXX_CFG(a)          (0x8001300 | (a) << 3)
 #define RVU_PRIV_HWVFX_NPA_CFG              (0x8001310)
 #define RVU_PRIV_HWVFX_SSO_CFG              (0x8001320)
 #define RVU_PRIV_HWVFX_SSOW_CFG             (0x8001330)
 #define RVU_PRIV_HWVFX_TIM_CFG              (0x8001340)
-#define RVU_PRIV_HWVFX_CPT0_CFG             (0x8001350)
+#define RVU_PRIV_HWVFX_CPTX_CFG(a)          (0x8001350 | (a) << 3)
+#define RVU_PRIV_PFX_REEX_CFG(a)            (0x8000360 | (a) << 3)
+#define RVU_PRIV_HWVFX_REEX_CFG(a)          (0x8001360 | (a) << 3)
 
 /* RVU PF registers */
 #define	RVU_PF_VFX_PFVF_MBOX0		    (0x00000)
@@ -681,6 +683,8 @@
 #define NPC_AF_BLK_RST			(0x00040)
 #define NPC_AF_MCAM_SCRUB_CTL		(0x000a0)
 #define NPC_AF_KCAM_SCRUB_CTL		(0x000b0)
+#define NPC_AF_CONST2			(0x00100)
+#define NPC_AF_CONST3			(0x00110)
 #define NPC_AF_KPUX_CFG(a)		(0x00500 | (a) << 3)
 #define NPC_AF_PCK_CFG			(0x00600)
 #define NPC_AF_PCK_DEF_OL2		(0x00610)
@@ -704,20 +708,7 @@
 		(0x900000 | (a) << 16 | (b) << 12 | (c) << 5 | (d) << 3)
 #define NPC_AF_INTFX_LDATAX_FLAGSX_CFG(a, b, c) \
 		(0x980000 | (a) << 16 | (b) << 12 | (c) << 3)
-#define NPC_AF_MCAMEX_BANKX_CAMX_INTF(a, b, c)       \
-		(0x1000000ull | (a) << 10 | (b) << 6 | (c) << 3)
-#define NPC_AF_MCAMEX_BANKX_CAMX_W0(a, b, c)         \
-		(0x1000010ull | (a) << 10 | (b) << 6 | (c) << 3)
-#define NPC_AF_MCAMEX_BANKX_CAMX_W1(a, b, c)         \
-		(0x1000020ull | (a) << 10 | (b) << 6 | (c) << 3)
-#define NPC_AF_MCAMEX_BANKX_CFG(a, b)	 (0x1800000ull | (a) << 8 | (b) << 4)
-#define NPC_AF_MCAMEX_BANKX_STAT_ACT(a, b) \
-		(0x1880000 | (a) << 8 | (b) << 4)
-#define NPC_AF_MATCH_STATX(a)		(0x1880008 | (a) << 8)
 #define NPC_AF_INTFX_MISS_STAT_ACT(a)	(0x1880040 + (a) * 0x8)
-#define NPC_AF_MCAMEX_BANKX_ACTION(a, b) (0x1900000ull | (a) << 8 | (b) << 4)
-#define NPC_AF_MCAMEX_BANKX_TAG_ACT(a, b) \
-		(0x1900008 | (a) << 8 | (b) << 4)
 #define NPC_AF_INTFX_MISS_ACT(a)	(0x1a00000 | (a) << 4)
 #define NPC_AF_INTFX_MISS_TAG_ACT(a)	(0x1b00008 | (a) << 4)
 #define NPC_AF_MCAM_BANKX_HITX(a, b)	(0x1c80000 | (a) << 8 | (b) << 4)
@@ -733,6 +724,70 @@
 #define NPC_AF_MCAM_DBG			(0x3001000)
 #define NPC_AF_DBG_DATAX(a)		(0x3001400 | (a) << 4)
 #define NPC_AF_DBG_RESULTX(a)		(0x3001800 | (a) << 4)
+
+#define NPC_AF_MCAMEX_BANKX_CAMX_INTF(a, b, c) ({			   \
+	u64 offset;							   \
+									   \
+	offset = (0x1000000ull | (a) << 10 | (b) << 6 | (c) << 3);	   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000000ull | (a) << 8 | (b) << 22 | (c) << 3); \
+	offset; })
+
+#define NPC_AF_MCAMEX_BANKX_CAMX_W0(a, b, c) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1000010ull | (a) << 10 | (b) << 6 | (c) << 3);	   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000010ull | (a) << 8 | (b) << 22 | (c) << 3); \
+	offset; })
+
+#define NPC_AF_MCAMEX_BANKX_CAMX_W1(a, b, c) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1000020ull | (a) << 10 | (b) << 6 | (c) << 3);	   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000020ull | (a) << 8 | (b) << 22 | (c) << 3); \
+	offset; })
+
+#define NPC_AF_MCAMEX_BANKX_CFG(a, b) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1800000ull | (a) << 8 | (b) << 4);			   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000038ull | (a) << 8 | (b) << 22);		   \
+	offset; })
+
+#define NPC_AF_MCAMEX_BANKX_ACTION(a, b) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1900000ull | (a) << 8 | (b) << 4);			   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000040ull | (a) << 8 | (b) << 22);		   \
+	offset; })							   \
+
+#define NPC_AF_MCAMEX_BANKX_TAG_ACT(a, b) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1900008ull | (a) << 8 | (b) << 4);			   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000048ull | (a) << 8 | (b) << 22);		   \
+	offset; })							   \
+
+#define NPC_AF_MCAMEX_BANKX_STAT_ACT(a, b) ({				   \
+	u64 offset;							   \
+									   \
+	offset = (0x1880000ull | (a) << 8 | (b) << 4);			   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000050ull | (a) << 8 | (b) << 22);		   \
+	offset; })							   \
+
+#define NPC_AF_MATCH_STATX(a) ({					   \
+	u64 offset;							   \
+									   \
+	offset = (0x1880008ull | (a) << 8);				   \
+	if (rvu->hw->npc_ext_set)					   \
+		offset = (0x8000078ull | (a) << 8);			   \
+	offset; })							   \
 
 /* NDC */
 #define NDC_AF_CONST			(0x00000)
@@ -769,4 +824,79 @@
 #define SSOW_AF_BAR2_ALIASX(a, b)	AF_BAR2_ALIASX(a, b)
 #define SSO_AF_BAR2_ALIASX(a, b)	AF_BAR2_ALIASX(a, b)
 
+/* REE */
+#define REE_AF_CMD_CTL			(0x00ull)
+#define REE_AF_CONSTANTS		(0x0A0ull)
+#define REE_AF_AQ_SBUF_CTL		(0x100ull)
+#define REE_AF_AQ_SBUF_ADDR		(0x110ull)
+#define REE_AF_AQ_DONE			(0x128ull)
+#define REE_AF_AQ_DONE_ACK		(0x130ull)
+#define REE_AF_AQ_DONE_INT		(0x150ull)
+#define REE_AF_AQ_DONE_INT_ENA_W1S	(0x168ull)
+#define REE_AF_AQ_DONE_INT_ENA_W1C	(0x170ull)
+#define REE_AF_AQ_ENA			(0x180ull)
+#define REE_AF_AQ_DOORBELL		(0x200ull)
+#define REE_AF_PF_FUNC			(0x210ull)
+#define REE_AF_EM_BASE			(0x300ull)
+#define REE_AF_RAS			(0x980ull)
+#define REE_AF_RAS_ENA_W1C		(0x990ull)
+#define REE_AF_RAS_ENA_W1S		(0x998ull)
+#define REE_AF_QUE_SBUF_CTL(a)		(0x1200ull | (a) << 3)
+#define REE_PRIV_AF_INT_CFG		(0x4000ull)
+#define REE_AF_REEXM_STATUS		(0x8050ull)
+#define REE_AF_REEXM_CTRL		(0x80C0ull)
+#define REE_AF_REEXM_MAX_MATCH		(0x80C8ull)
+#define REE_AF_REEXM_MAX_PRE_CNT	(0x80D0ull)
+#define REE_AF_REEXM_MAX_PTHREAD_CNT	(0x80D8ull)
+#define REE_AF_REEXM_MAX_LATENCY_CNT	(0x80E0ull)
+#define REE_AF_REEXR_STATUS		(0x8250ull)
+#define REE_AF_REEXR_CTRL		(0x82C0ull)
+#define REE_PRIV_LFX_CFG		(0x41000ull)
+#define REE_PRIV_LFX_INT_CFG		(0x42000ull)
+#define REE_AF_LF_RST			(0x43000ull)
+#define REE_AF_RVU_LF_CFG_DEBUG		(0x44000ull)
+#define REE_AF_BLK_RST			(0x45000ull)
+#define REE_AF_RVU_INT			(0x46000ull)
+#define REE_AF_RVU_INT_ENA_W1S		(0x46010ull)
+#define REE_AF_RVU_INT_ENA_W1C		(0x46018ull)
+#define REE_AF_AQ_INT			(0x46020ull)
+#define REE_AF_AQ_INT_ENA_W1S		(0x46030ull)
+#define REE_AF_AQ_INT_ENA_W1C		(0x46038ull)
+#define REE_AF_GRACEFUL_DIS_CTL		(0x46100ull)
+#define REE_AF_GRACEFUL_DIS_STATUS	(0x46110ull)
+
+#define REE_AF_FORCE_CSCLK		BIT_ULL(1)
+#define REE_AF_FORCE_CCLK		BIT_ULL(2)
+#define REE_AF_RAS_DAT_PSN		BIT_ULL(0)
+#define REE_AF_RAS_LD_CMD_PSN		BIT_ULL(1)
+#define REE_AF_RAS_LD_REEX_PSN		BIT_ULL(2)
+#define REE_AF_RVU_INT_UNMAPPED_SLOT	BIT_ULL(0)
+#define REE_AF_AQ_INT_DOVF		BIT_ULL(0)
+#define REE_AF_AQ_INT_IRDE		BIT_ULL(1)
+#define REE_AF_AQ_INT_PRDE		BIT_ULL(2)
+#define REE_AF_AQ_INT_PLLE		BIT_ULL(3)
+#define REE_AF_REEXM_CTRL_INIT		BIT_ULL(0)
+#define REE_AF_REEXM_CTRL_GO		BIT_ULL(3)
+#define REE_AF_REEXM_STATUS_INIT_DONE	BIT_ULL(0)
+#define REE_AF_REEXR_CTRL_INIT		BIT_ULL(0)
+#define REE_AF_REEXR_CTRL_GO		BIT_ULL(1)
+#define REE_AF_REEXR_CTRL_MODE_IM_L1_L2	BIT_ULL(4)
+#define REE_AF_REEXR_CTRL_MODE_L1_L2	BIT_ULL(5)
+
+#define REE_AF_AQ_SBUF_CTL_SIZE_SHIFT	32
+#define REE_AF_REEXM_MAX_MATCH_MAX	0xFEull
+#define REE_AF_REEXM_MAX_PRE_CNT_COUNT	0x3F0ull
+#define REE_AF_REEXM_MAX_PTHREAD_COUNT	0xFFFFull
+#define REE_AF_REEXM_MAX_LATENCY_COUNT	0xFFFFull
+#define REE_AF_QUE_SBUF_CTL_SIZE_SHIFT	32
+#define REE_AF_REEX_CSR_BLOCK_BASE_ADDR	(0x8000ull)
+#define REE_AF_REEX_CSR_BLOCK_ID	(0x200ull)
+#define REE_AF_REEX_CSR_BLOCK_ID_MASK	GENMASK_ULL(18, 16)
+#define REE_AF_REEX_CSR_BLOCK_ID_SHIFT	16
+#define REE_AF_REEX_CSR_INDEX		8
+#define REE_AF_REEX_CSR_INDEX_MASK	GENMASK_ULL(4, 0)
+#define REE_AF_QUE_SBUF_CTL_MAX_SIZE	GENMASK_ULL((50 - 32), 0)
+#define REE_AF_REEXR_STATUS_IM_INIT_DONE	BIT_ULL(4)
+#define REE_AF_REEXR_STATUS_L1_CACHE_INIT_DONE	BIT_ULL(5)
+#define REE_AF_REEXR_STATUS_L2_CACHE_INIT_DONE	BIT_ULL(6)
 #endif /* RVU_REG_H */

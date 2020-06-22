@@ -36,7 +36,7 @@
 
 #define INTR_MASK(pfvfs) ((pfvfs < 64) ? (BIT_ULL(pfvfs) - 1) : (~0ull))
 
-#define MBOX_RSP_TIMEOUT	2000 /* Time(ms) to wait for mbox response */
+#define MBOX_RSP_TIMEOUT	3000 /* Time(ms) to wait for mbox response */
 
 #define MBOX_MSG_ALIGN		16  /* Align mbox msg start to 16bytes */
 
@@ -86,7 +86,7 @@ struct mbox_msghdr {
 #define OTX2_MBOX_REQ_SIG (0xdead)
 #define OTX2_MBOX_RSP_SIG (0xbeef)
 	u16 sig;         /* Signature, for validating corrupted msgs */
-#define OTX2_MBOX_VERSION (0x0005)
+#define OTX2_MBOX_VERSION (0x0007)
 	u16 ver;         /* Version of msg's structure for this ID */
 	u16 next_msgoff; /* Offset of next msg within mailbox region */
 	int rc;          /* Msg process'ed response code */
@@ -212,6 +212,19 @@ M(CPT_SET_CRYPTO_GRP,	0xA03, cpt_set_crypto_grp,			\
 			       cpt_set_crypto_grp_req_msg)		\
 M(CPT_INLINE_IPSEC_CFG,	0xA04, cpt_inline_ipsec_cfg,			\
 			       cpt_inline_ipsec_cfg_msg, msg_rsp)	\
+/* REE mbox IDs (range 0xE00 - 0xFFF) */				\
+M(REE_CONFIG_LF,	0xE01, ree_config_lf, ree_lf_req_msg,		\
+				msg_rsp)				\
+M(REE_RD_WR_REGISTER,	0xE02, ree_rd_wr_register, ree_rd_wr_reg_msg,	\
+				ree_rd_wr_reg_msg)			\
+M(REE_RULE_DB_PROG,	0xE03, ree_rule_db_prog,			\
+				ree_rule_db_prog_req_msg,		\
+				msg_rsp)				\
+M(REE_RULE_DB_LEN_GET,	0xE04, ree_rule_db_len_get, ree_req_msg,	\
+				ree_rule_db_len_rsp_msg)		\
+M(REE_RULE_DB_GET,	0xE05, ree_rule_db_get,				\
+				ree_rule_db_get_req_msg,		\
+				ree_rule_db_get_rsp_msg)		\
 /* NPC mbox IDs (range 0x6000 - 0x7FFF) */				\
 M(NPC_MCAM_ALLOC_ENTRY,	0x6000, npc_mcam_alloc_entry, npc_mcam_alloc_entry_req,\
 				npc_mcam_alloc_entry_rsp)		\
@@ -341,6 +354,17 @@ struct ready_msg_rsp {
  * or to detach partial of a cetain resource type.
  * Rest of the fields specify how many of what type to
  * be attached.
+ * To request LFs from two blocks of same type this mailbox
+ * can be sent twice as below:
+ *      struct rsrc_attach *attach;
+ *       .. Allocate memory for message ..
+ *       attach->cptlfs = 3; <3 LFs from CPT0>
+ *       .. Send message ..
+ *       .. Allocate memory for message ..
+ *       attach->modify = 1;
+ *       attach->cpt_blkaddr = BLKADDR_CPT1;
+ *       attach->cptlfs = 2; <2 LFs from CPT1>
+ *       .. Send message ..
  */
 struct rsrc_attach {
 	struct mbox_msghdr hdr;
@@ -351,6 +375,9 @@ struct rsrc_attach {
 	u16  ssow;
 	u16  timlfs;
 	u16  cptlfs;
+	u16  reelfs;
+	int  cpt_blkaddr; /* BLKADDR_CPT0/BLKADDR_CPT1 or 0 for BLKADDR_CPT0 */
+	int  ree_blkaddr; /* BLKADDR_REE0/BLKADDR_REE1 or 0 for BLKADDR_REE0 */
 };
 
 /* Structure for relinquishing resources.
@@ -367,6 +394,7 @@ struct rsrc_detach {
 	u8 ssow:1;
 	u8 timlfs:1;
 	u8 cptlfs:1;
+	u8 reelfs:1;
 };
 
 /*
@@ -382,6 +410,11 @@ struct free_rsrcs_rsp {
 	u16  cpt;
 	u8   npa;
 	u8   nix;
+	u16  schq_nix1[NIX_TXSCH_LVL_CNT];
+	u8   nix1;
+	u8   cpt1;
+	u8   ree0;
+	u8   ree1;
 };
 
 #define MSIX_VECTOR_INVALID	0xFFFF
@@ -399,6 +432,12 @@ struct msix_offset_rsp {
 	u16  ssow_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  timlf_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  cptlf_msixoff[MAX_RVU_BLKLF_CNT];
+	u8   cpt1_lfs;
+	u8   ree0_lfs;
+	u8   ree1_lfs;
+	u16  cpt1_lf_msixoff[MAX_RVU_BLKLF_CNT];
+	u16  ree0_lf_msixoff[MAX_RVU_BLKLF_CNT];
+	u16  ree1_lf_msixoff[MAX_RVU_BLKLF_CNT];
 };
 
 /* CGX mbox message formats */
@@ -554,6 +593,7 @@ struct npc_set_pkind {
 #define OTX2_PRIV_FLAGS_DEFAULT  BIT_ULL(0)
 #define OTX2_PRIV_FLAGS_EDSA     BIT_ULL(1)
 #define OTX2_PRIV_FLAGS_HIGIG    BIT_ULL(2)
+#define OTX2_PRIV_FLAGS_FDSA     BIT_ULL(3)
 #define OTX2_PRIV_FLAGS_CUSTOM   BIT_ULL(63)
 	u64 mode;
 #define PKIND_TX		BIT_ULL(0)
@@ -724,6 +764,9 @@ struct nix_lf_alloc_rsp {
 	u16	cints; /* NIX_AF_CONST2::CINTS */
 	u16	qints; /* NIX_AF_CONST2::QINTS */
 	u8	hw_rx_tstamp_en;
+	u8	cgx_links;  /* No. of CGX links present in HW */
+	u8	lbk_links;  /* No. of LBK links present in HW */
+	u8	sdp_links;  /* No. of SDP links present in HW */
 };
 
 struct nix_lf_free_req {
@@ -908,6 +951,8 @@ struct nix_rss_flowkey_cfg {
 #define NIX_FLOW_KEY_TYPE_INNR_UDP      BIT(15)
 #define NIX_FLOW_KEY_TYPE_INNR_SCTP     BIT(16)
 #define NIX_FLOW_KEY_TYPE_INNR_ETH_DMAC BIT(17)
+#define NIX_FLOW_KEY_TYPE_CH_LEN_90B    BIT(18)
+#define NIX_FLOW_KEY_TYPE_CUSTOM0	BIT(19)
 #define NIX_FLOW_KEY_TYPE_L4_DST_ONLY BIT(28)
 #define NIX_FLOW_KEY_TYPE_L4_SRC_ONLY BIT(29)
 #define NIX_FLOW_KEY_TYPE_L3_DST_ONLY BIT(30)
@@ -1325,6 +1370,7 @@ enum header_fields {
 	NPC_DPORT_TCP,
 	NPC_SPORT_UDP,
 	NPC_DPORT_UDP,
+	NPC_FDSA_VAL,
 	NPC_HEADER_FIELDS_MAX,
 };
 
@@ -1541,6 +1587,99 @@ struct cpt_inline_ipsec_cfg_msg {
 	u8 dir;
 	u16 sso_pf_func; /* inbound path SSO_PF_FUNC */
 	u16 nix_pf_func; /* outbound path NIX_PF_FUNC */
+};
+
+/* REE mailbox error codes
+ * Range 1001 - 1100.
+ */
+enum ree_af_status {
+	REE_AF_ERR_RULE_UNKNOWN_VALUE		= -1001,
+	REE_AF_ERR_LF_NO_MORE_RESOURCES		= -1002,
+	REE_AF_ERR_LF_INVALID			= -1003,
+	REE_AF_ERR_ACCESS_DENIED		= -1004,
+	REE_AF_ERR_RULE_DB_PARTIAL		= -1005,
+	REE_AF_ERR_RULE_DB_EQ_BAD_VALUE		= -1006,
+	REE_AF_ERR_RULE_DB_BLOCK_ALLOC_FAILED	= -1007,
+	REE_AF_ERR_BLOCK_NOT_IMPLEMENTED	= -1008,
+	REE_AF_ERR_RULE_DB_INC_OFFSET_TOO_BIG	= -1009,
+	REE_AF_ERR_RULE_DB_OFFSET_TOO_BIG	= -1010,
+	REE_AF_ERR_Q_IS_GRACEFUL_DIS		= -1011,
+	REE_AF_ERR_Q_NOT_GRACEFUL_DIS		= -1012,
+	REE_AF_ERR_RULE_DB_ALLOC_FAILED		= -1013,
+	REE_AF_ERR_RULE_DB_TOO_BIG		= -1014,
+	REE_AF_ERR_RULE_DB_GEQ_BAD_VALUE	= -1015,
+	REE_AF_ERR_RULE_DB_LEQ_BAD_VALUE	= -1016,
+	REE_AF_ERR_RULE_DB_WRONG_LENGTH		= -1017,
+	REE_AF_ERR_RULE_DB_WRONG_OFFSET		= -1018,
+	REE_AF_ERR_RULE_DB_BLOCK_TOO_BIG	= -1019,
+	REE_AF_ERR_RULE_DB_SHOULD_FILL_REQUEST	= -1020,
+	REE_AF_ERR_RULE_DBI_ALLOC_FAILED	= -1021,
+	REE_AF_ERR_LF_WRONG_PRIORITY		= -1022,
+	REE_AF_ERR_LF_SIZE_TOO_BIG		= -1023,
+};
+
+/* REE mbox message formats */
+
+struct ree_req_msg {
+	struct mbox_msghdr hdr;
+	u32 blkaddr;
+};
+
+struct ree_lf_req_msg {
+	struct mbox_msghdr hdr;
+	u32 blkaddr;
+	u32 size;
+	u8 lf;
+	u8 pri;
+};
+
+struct ree_rule_db_prog_req_msg {
+	struct mbox_msghdr	hdr;
+/* Rule DB passed in MBOX and is copied to internal REE DB
+ * This size should be power of 2 to fit into rule DB internal blocks
+ */
+#define REE_RULE_DB_REQ_BLOCK_SIZE (MBOX_SIZE >> 1)
+	u8 rule_db[REE_RULE_DB_REQ_BLOCK_SIZE];
+	u32 blkaddr;		/* REE0 or REE1 */
+	u32 total_len;		/* Total len of rule db */
+	u32 offset;		/* Offset of current rule db block */
+	u16 len;		/* Length of rule db block */
+	u8 is_last;		/* Is this the last block */
+	u8 is_incremental;	/* Is incremental flow */
+	u8 is_dbi;		/* Is rule db incremental */
+};
+
+struct ree_rule_db_get_req_msg {
+	struct mbox_msghdr hdr;
+	u32 blkaddr;
+	u32 offset;	/* Retrieve db from this offset */
+	u8 is_dbi;	/* Is request for rule db incremental */
+};
+
+struct ree_rd_wr_reg_msg {
+	struct mbox_msghdr hdr;
+	u64 reg_offset;
+	u64 *ret_val;
+	u64 val;
+	u32 blkaddr;
+	u8 is_write;
+};
+
+struct ree_rule_db_len_rsp_msg {
+	struct mbox_msghdr hdr;
+	u32 blkaddr;
+	u32 len;
+	u32 inc_len;
+};
+
+struct ree_rule_db_get_rsp_msg {
+	struct mbox_msghdr hdr;
+#define REE_RULE_DB_RSP_BLOCK_SIZE (MBOX_DOWN_TX_SIZE - SZ_1K)
+	u8 rule_db[REE_RULE_DB_RSP_BLOCK_SIZE];
+	u32 total_len;		/* Total len of rule db */
+	u32 offset;		/* Offset of current rule db block */
+	u16 len;		/* Length of rule db block */
+	u8 is_last;		/* Is this the last block */
 };
 
 #endif /* MBOX_H */

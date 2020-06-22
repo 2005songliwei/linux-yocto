@@ -144,7 +144,7 @@ static void rvu_sso_ggrp_taq_flush(struct rvu *rvu, u16 pcifunc, int lf,
 	nix_lf = NULL;
 	nix_lf_cnt = rvu_sso_disable_aw_src(rvu, &nix_lf,
 					    rvu_get_blkaddr(rvu, BLKTYPE_NIX,
-							    0),
+							    pcifunc),
 					    NIX_AF_LF_SSO_PF_FUNC_SHIFT,
 					    NIX_AF_LF_CFG_SHIFT, pcifunc,
 					    NIX_AF_LFX_CFG(0));
@@ -228,7 +228,7 @@ get_work:
 
 	/* restore all sources of work. */
 	rvu_sso_enable_aw_src(rvu, nix_lf_cnt, rvu_get_blkaddr(rvu, BLKTYPE_NIX,
-							       0),
+							       pcifunc),
 			      NIX_AF_LFX_CFG(0), nix_lf, pcifunc,
 			      NIX_AF_LF_SSO_PF_FUNC_SHIFT,
 			      NIX_AF_LF_CFG_SHIFT);
@@ -296,11 +296,11 @@ int rvu_sso_lf_teardown(struct rvu *rvu, u16 pcifunc, int lf, int slot)
 		    SSOW_LF_GWS_INT_MASK);
 
 	/* Prepare WS for GW operations. */
-	do {
-		reg = rvu_read64(rvu, ssow_blkaddr,
-				 SSOW_AF_BAR2_ALIASX(0, SSOW_LF_GWS_TAG));
-	} while (reg & BIT_ULL(63));
+	rvu_poll_reg(rvu, ssow_blkaddr, SSOW_AF_BAR2_ALIASX(0, SSOW_LF_GWS_TAG),
+		     BIT_ULL(63), true);
 
+	reg = rvu_read64(rvu, ssow_blkaddr,
+			 SSOW_AF_BAR2_ALIASX(0, SSOW_LF_GWS_TAG));
 	if (reg & BIT_ULL(62))
 		rvu_write64(rvu, ssow_blkaddr,
 			    SSOW_AF_BAR2_ALIASX(0, SSOW_LF_GWS_OP_DESCHED), 0);
@@ -536,11 +536,9 @@ int rvu_ssow_lf_teardown(struct rvu *rvu, u16 pcifunc, int lf, int slot)
 
 	/* HRM 14.13.4 (3) */
 	/* Wait till waitw/desched completes. */
-	do {
-		reg = rvu_read64(rvu, ssow_blkaddr,
-				 SSOW_AF_BAR2_ALIASX(slot,
-						     SSOW_LF_GWS_PENDSTATE));
-	} while (reg & (BIT_ULL(63) | BIT_ULL(58)));
+	rvu_poll_reg(rvu, ssow_blkaddr,
+		     SSOW_AF_BAR2_ALIASX(slot, SSOW_LF_GWS_PENDSTATE),
+		     BIT_ULL(63) | BIT_ULL(58), true);
 
 	reg = rvu_read64(rvu, ssow_blkaddr,
 			 SSOW_AF_BAR2_ALIASX(slot, SSOW_LF_GWS_TAG));
@@ -557,11 +555,9 @@ int rvu_ssow_lf_teardown(struct rvu *rvu, u16 pcifunc, int lf, int slot)
 			    0x0);
 
 	/* Wait for desched to complete. */
-	do {
-		reg = rvu_read64(rvu, ssow_blkaddr,
-				 SSOW_AF_BAR2_ALIASX(slot,
-						     SSOW_LF_GWS_PENDSTATE));
-	} while (reg & BIT_ULL(58));
+	rvu_poll_reg(rvu, ssow_blkaddr,
+		     SSOW_AF_BAR2_ALIASX(slot, SSOW_LF_GWS_PENDSTATE),
+		     BIT_ULL(58), true);
 
 	rvu_write64(rvu, ssow_blkaddr,
 		    SSOW_AF_BAR2_ALIASX(0, SSOW_LF_GWS_NW_TIM), 0x0);
@@ -926,7 +922,7 @@ int rvu_mbox_handler_sso_ws_cache_inv(struct rvu *rvu, struct msg_req *req,
 	block = &hw->block[blkaddr];
 
 	num_lfs = rvu_get_rsrc_mapcount(rvu_get_pfvf(rvu, pcifunc),
-					block->type);
+					block->addr);
 	if (!num_lfs)
 		return SSOW_AF_ERR_LF_INVALID;
 
