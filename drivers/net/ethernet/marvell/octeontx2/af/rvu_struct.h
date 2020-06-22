@@ -14,24 +14,30 @@
 /* RVU Block revision IDs */
 #define RVU_BLK_RVUM_REVID		0x01
 
+#define RVU_MULTI_BLK_VER		0x7ULL
+
 /* RVU Block Address Enumeration */
 enum rvu_block_addr_e {
-	BLKADDR_RVUM		= 0x0ULL,
-	BLKADDR_LMT		= 0x1ULL,
-	BLKADDR_MSIX		= 0x2ULL,
-	BLKADDR_NPA		= 0x3ULL,
-	BLKADDR_NIX0		= 0x4ULL,
-	BLKADDR_NIX1		= 0x5ULL,
-	BLKADDR_NPC		= 0x6ULL,
-	BLKADDR_SSO		= 0x7ULL,
-	BLKADDR_SSOW		= 0x8ULL,
-	BLKADDR_TIM		= 0x9ULL,
-	BLKADDR_CPT0		= 0xaULL,
-	BLKADDR_CPT1		= 0xbULL,
-	BLKADDR_NDC_NIX0_RX	= 0xcULL,
-	BLKADDR_NDC_NIX0_TX	= 0xdULL,
-	BLKADDR_NDC_NPA0	= 0xeULL,
-	BLK_COUNT		= 0xfULL,
+	BLKADDR_RVUM            = 0x0ULL,
+	BLKADDR_LMT             = 0x1ULL,
+	BLKADDR_MSIX            = 0x2ULL,
+	BLKADDR_NPA             = 0x3ULL,
+	BLKADDR_NIX0            = 0x4ULL,
+	BLKADDR_NIX1            = 0x5ULL,
+	BLKADDR_NPC             = 0x6ULL,
+	BLKADDR_SSO             = 0x7ULL,
+	BLKADDR_SSOW            = 0x8ULL,
+	BLKADDR_TIM             = 0x9ULL,
+	BLKADDR_CPT0            = 0xaULL,
+	BLKADDR_CPT1            = 0xbULL,
+	BLKADDR_NDC_NIX0_RX     = 0xcULL,
+	BLKADDR_NDC_NIX0_TX     = 0xdULL,
+	BLKADDR_NDC_NPA0        = 0xeULL,
+	BLKADDR_NDC_NIX1_RX	= 0x10ULL,
+	BLKADDR_NDC_NIX1_TX	= 0x11ULL,
+	BLKADDR_REE0		= 0x14ULL,
+	BLKADDR_REE1		= 0x15ULL,
+	BLK_COUNT               = 0x16ULL,
 };
 
 /* RVU Block Type Enumeration */
@@ -47,7 +53,8 @@ enum rvu_block_type_e {
 	BLKTYPE_TIM  = 0x8,
 	BLKTYPE_CPT  = 0x9,
 	BLKTYPE_NDC  = 0xa,
-	BLKTYPE_MAX  = 0xa,
+	BLKTYPE_REE  = 0xe,
+	BLKTYPE_MAX  = 0xe,
 };
 
 /* RVU Admin function Interrupt Vector Enumeration */
@@ -95,6 +102,15 @@ enum cpt_af_int_vec_e {
 	CPT_AF_INT_VEC_RVU	= 0x2,
 	CPT_AF_INT_VEC_RAS	= 0x3,
 	CPT_AF_INT_VEC_CNT	= 0x4,
+};
+
+/* REE Admin function Interrupt Vector Enumeration */
+enum ree_af_int_vec_e {
+	REE_AF_INT_VEC_RAS	= 0x0,
+	REE_AF_INT_VEC_RVU	= 0x1,
+	REE_AF_INT_VEC_QUE_DONE	= 0x2,
+	REE_AF_INT_VEC_AQ	= 0x3,
+	REE_AF_INT_VEC_CNT	= 0x4,
 };
 
 /**
@@ -967,4 +983,43 @@ enum nix_vtag_size {
 	VTAGSIZE_T4   = 0x0,
 	VTAGSIZE_T8   = 0x1,
 };
+
+/* REE admin queue instruction structure */
+struct ree_af_aq_inst_s {
+	u64 rof_ptr_addr;
+#if defined(__BIG_ENDIAN_BITFIELD)
+	u64 reserved_111_127	: 17;
+	u64 length		: 15;
+	u64 reserved_68_95	: 28;
+	u64 doneint		:  1;
+	u64 reserved_66_66	:  1;
+	u64 nc			:  1;
+	u64 reserved_64_64	:  1;
+#else
+	u64 reserved_64_64	:  1;
+	u64 nc			:  1;
+	u64 reserved_66_66	:  1;
+	u64 doneint		:  1;
+	u64 reserved_68_95	: 28;
+	u64 length		: 15;
+	u64 reserved_111_127	: 17;
+#endif
+};
+
+/* REE ROF file entry structure */
+struct ree_rof_s {
+#if defined(__BIG_ENDIAN_BITFIELD)
+	u64 reserved_40_63	: 24;
+	u64 typ			:  8;
+	u64 reserved_24_31	:  8;
+	u64 addr		: 24;
+#else
+	u64 addr		: 24;
+	u64 reserved_24_31	:  8;
+	u64 typ			:  8;
+	u64 reserved_40_63	: 24;
+#endif
+	u64 data;
+};
+
 #endif /* RVU_STRUCT_H */

@@ -108,14 +108,6 @@ void rvu_nix_txsch_config_changed(struct nix_hw *nix_hw)
 		tx_stall->txsch_config_changed = true;
 }
 
-static inline struct nix_hw *get_nix_hw(struct rvu_hwinfo *hw, int blkaddr)
-{
-	if (blkaddr == BLKADDR_NIX0 && hw->nix0)
-		return hw->nix0;
-
-	return NULL;
-}
-
 void rvu_nix_update_link_credits(struct rvu *rvu, int blkaddr,
 				 int link, u64 ncredits)
 {
@@ -814,27 +806,22 @@ static void rvu_nix_tx_stall_workaround_exit(struct rvu *rvu,
 	mutex_destroy(&tx_stall->txsch_lock);
 }
 
-ssize_t rvu_nix_get_tx_stall_counters(struct rvu *rvu,
+ssize_t rvu_nix_get_tx_stall_counters(struct nix_hw *nix_hw,
 				      char __user *buffer, loff_t *ppos)
 {
-	struct rvu_hwinfo *hw = rvu->hw;
+	struct rvu *rvu = nix_hw->rvu;
+	struct rvu_hwinfo *hw;
 	struct nix_tx_stall *tx_stall;
 	struct rvu_block *block;
-	struct nix_hw *nix_hw;
 	int blkaddr, len, lf;
 	char *kbuf;
 	int size = 2000;
 
+	hw = rvu->hw;
 	if (*ppos)
 		return 0;
 
-	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, 0);
-	if (blkaddr < 0)
-		return -EFAULT;
-
-	nix_hw = get_nix_hw(rvu->hw, blkaddr);
-	if (!nix_hw)
-		return -EFAULT;
+	blkaddr = nix_hw->blkaddr;
 
 	tx_stall = nix_hw->tx_stall;
 	if (!tx_stall)
