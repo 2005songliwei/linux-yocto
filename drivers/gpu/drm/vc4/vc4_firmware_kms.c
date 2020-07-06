@@ -82,11 +82,6 @@ struct set_plane {
 #define TRANSFORM_FLIP_HRIZ	BIT(16)
 #define TRANSFORM_FLIP_VERT	BIT(17)
 
-#define SUPPORTED_ROTATIONS	(DRM_MODE_ROTATE_0 | \
-				 DRM_MODE_ROTATE_180 | \
-				 DRM_MODE_REFLECT_X | \
-				 DRM_MODE_REFLECT_Y)
-
 struct mailbox_set_plane {
 	struct rpi_firmware_property_tag_header tag;
 	struct set_plane plane;
@@ -97,6 +92,12 @@ struct mailbox_blank_display {
 	u32 display;
 	struct rpi_firmware_property_tag_header tag2;
 	u32 blank;
+};
+
+struct mailbox_display_pwr {
+	struct rpi_firmware_property_tag_header tag1;
+	u32 display;
+	u32 state;
 };
 
 struct mailbox_get_edid {
@@ -215,6 +216,10 @@ static const struct vc_image_format {
 		.vc_image = VC_IMAGE_YUV420SP,
 		.is_vu = 1,
 	},
+	{
+		.drm = DRM_FORMAT_P030,
+		.vc_image = VC_IMAGE_YUV10COL,
+	},
 };
 
 static const struct vc_image_format *vc4_get_vc_image_fmt(u32 drm_format)
@@ -259,7 +264,7 @@ static inline struct vc4_crtc *to_vc4_crtc(struct drm_crtc *crtc)
 	return container_of(crtc, struct vc4_crtc, base);
 }
 
-struct vc4_crtc_state {
+struct fkms_crtc_state {
 	struct drm_crtc_state base;
 
 	struct {
@@ -270,15 +275,17 @@ struct vc4_crtc_state {
 	} margins;
 };
 
-static inline struct vc4_crtc_state *
-to_vc4_crtc_state(struct drm_crtc_state *crtc_state)
+static inline struct fkms_crtc_state *
+to_fkms_crtc_state(struct drm_crtc_state *crtc_state)
 {
-	return (struct vc4_crtc_state *)crtc_state;
+	return (struct fkms_crtc_state *)crtc_state;
 }
 
 struct vc4_fkms_encoder {
 	struct drm_encoder base;
 	bool hdmi_monitor;
+	bool rgb_range_selectable;
+	int display_num;
 };
 
 static inline struct vc4_fkms_encoder *
@@ -407,7 +414,7 @@ static void vc4_fkms_crtc_get_margins(struct drm_crtc_state *state,
 				      unsigned int *left, unsigned int *right,
 				      unsigned int *top, unsigned int *bottom)
 {
-	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
+	struct fkms_crtc_state *vc4_state = to_fkms_crtc_state(state);
 	struct drm_connector_state *conn_state;
 	struct drm_connector *conn;
 	int i;
@@ -420,7 +427,7 @@ static void vc4_fkms_crtc_get_margins(struct drm_crtc_state *state,
 	/* We have to interate over all new connector states because
 	 * vc4_fkms_crtc_get_margins() might be called before
 	 * vc4_fkms_crtc_atomic_check() which means margins info in
-	 * vc4_crtc_state might be outdated.
+	 * fkms_crtc_state might be outdated.
 	 */
 	for_each_new_connector_in_state(state->state, conn, conn_state, i) {
 		if (conn_state->crtc != state->crtc)
@@ -525,7 +532,7 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 	const struct vc_image_format *vc_fmt =
 					vc4_get_vc_image_fmt(drm_fmt->format);
 	int num_planes = fb->format->num_planes;
-	unsigned int rotation = SUPPORTED_ROTATIONS;
+	unsigned int rotation;
 
 	mb->plane.vc_image_type = vc_fmt->vc_image;
 	mb->plane.width = fb->width;
@@ -546,23 +553,16 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 	mb->plane.is_vu = vc_fmt->is_vu;
 	mb->plane.planes[0] = bo->paddr + fb->offsets[0];
 
-	rotation = drm_rotation_simplify(state->rotation, rotation);
+	rotation = drm_rotation_simplify(state->rotation,
+					 DRM_MODE_ROTATE_0 |
+					 DRM_MODE_REFLECT_X |
+					 DRM_MODE_REFLECT_Y);
 
-	switch (rotation) {
-	default:
-	case DRM_MODE_ROTATE_0:
-		mb->plane.transform = TRANSFORM_NO_ROTATE;
-		break;
-	case DRM_MODE_ROTATE_180:
-		mb->plane.transform = TRANSFORM_ROTATE_180;
-		break;
-	case DRM_MODE_REFLECT_X:
-		mb->plane.transform = TRANSFORM_FLIP_HRIZ;
-		break;
-	case DRM_MODE_REFLECT_Y:
-		mb->plane.transform = TRANSFORM_FLIP_VERT;
-		break;
-	}
+	mb->plane.transform = TRANSFORM_NO_ROTATE;
+	if (rotation & DRM_MODE_REFLECT_X)
+		mb->plane.transform |= TRANSFORM_FLIP_HRIZ;
+	if (rotation & DRM_MODE_REFLECT_Y)
+		mb->plane.transform |= TRANSFORM_FLIP_VERT;
 
 	vc4_fkms_margins_adj(state, &mb->plane);
 
@@ -626,7 +626,15 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 		}
 		break;
 	case DRM_FORMAT_MOD_BROADCOM_SAND128:
-		mb->plane.vc_image_type = VC_IMAGE_YUV_UV;
+		switch (mb->plane.vc_image_type) {
+		case VC_IMAGE_YUV420SP:
+			mb->plane.vc_image_type = VC_IMAGE_YUV_UV;
+			break;
+		/* VC_IMAGE_YUV10COL could be included in here, but it is only
+		 * valid as a SAND128 format, so the table at the top will have
+		 * already set the correct format.
+		 */
+		}
 		/* Note that the column pitch is passed across in lines, not
 		 * bytes.
 		 */
@@ -708,6 +716,13 @@ static bool vc4_fkms_format_mod_supported(struct drm_plane *plane,
 	case DRM_FORMAT_NV12:
 		switch (fourcc_mod_broadcom_mod(modifier)) {
 		case DRM_FORMAT_MOD_LINEAR:
+		case DRM_FORMAT_MOD_BROADCOM_SAND128:
+			return true;
+		default:
+			return false;
+		}
+	case DRM_FORMAT_P030:
+		switch (fourcc_mod_broadcom_mod(modifier)) {
 		case DRM_FORMAT_MOD_BROADCOM_SAND128:
 			return true;
 		default:
@@ -803,7 +818,10 @@ static struct drm_plane *vc4_fkms_plane_init(struct drm_device *dev,
 
 	drm_plane_create_alpha_property(plane);
 	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
-					   SUPPORTED_ROTATIONS);
+					   DRM_MODE_ROTATE_0 |
+					   DRM_MODE_ROTATE_180 |
+					   DRM_MODE_REFLECT_X |
+					   DRM_MODE_REFLECT_Y);
 	drm_plane_create_color_properties(plane,
 					  BIT(DRM_COLOR_YCBCR_BT601) |
 					  BIT(DRM_COLOR_YCBCR_BT709) |
@@ -918,18 +936,13 @@ static void vc4_crtc_mode_set_nofb(struct drm_crtc *crtc)
 		break;
 	}
 
+	mb.timings.video_id_code = frame.avi.video_code;
+
 	if (!vc4_encoder->hdmi_monitor) {
 		mb.timings.flags |= TIMINGS_FLAGS_DVI;
-		mb.timings.video_id_code = frame.avi.video_code;
 	} else {
 		struct vc4_fkms_connector_state *conn_state =
 			to_vc4_fkms_connector_state(vc4_crtc->connector->state);
-
-		/* Do not provide a VIC as the HDMI spec requires that we do not
-		 * signal the opposite of the defined range in the AVI
-		 * infoframe.
-		 */
-		mb.timings.video_id_code = 0;
 
 		if (conn_state->broadcast_rgb == VC4_BROADCAST_RGB_AUTO) {
 			/* See CEA-861-E - 5.1 Default Encoding Parameters */
@@ -940,6 +953,16 @@ static void vc4_crtc_mode_set_nofb(struct drm_crtc *crtc)
 			if (conn_state->broadcast_rgb ==
 						VC4_BROADCAST_RGB_LIMITED)
 				mb.timings.flags |= TIMINGS_FLAGS_RGB_LIMITED;
+
+			/* If not using the default range, then do not provide
+			 * a VIC as the HDMI spec requires that we do not
+			 * signal the opposite of the defined range in the AVI
+			 * infoframe.
+			 */
+			if (!!(mb.timings.flags & TIMINGS_FLAGS_RGB_LIMITED) !=
+			    (drm_default_rgb_quant_range(mode) ==
+					HDMI_QUANTIZATION_RANGE_LIMITED))
+				mb.timings.video_id_code = 0;
 		}
 	}
 
@@ -1069,7 +1092,7 @@ vc4_crtc_mode_valid(struct drm_crtc *crtc, const struct drm_display_mode *mode)
 static int vc4_crtc_atomic_check(struct drm_crtc *crtc,
 				 struct drm_crtc_state *state)
 {
-	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
+	struct fkms_crtc_state *vc4_state = to_fkms_crtc_state(state);
 	struct drm_connector *conn;
 	struct drm_connector_state *conn_state;
 	int i;
@@ -1179,13 +1202,13 @@ static int vc4_page_flip(struct drm_crtc *crtc,
 static struct drm_crtc_state *
 vc4_crtc_duplicate_state(struct drm_crtc *crtc)
 {
-	struct vc4_crtc_state *vc4_state, *old_vc4_state;
+	struct fkms_crtc_state *vc4_state, *old_vc4_state;
 
 	vc4_state = kzalloc(sizeof(*vc4_state), GFP_KERNEL);
 	if (!vc4_state)
 		return NULL;
 
-	old_vc4_state = to_vc4_crtc_state(crtc->state);
+	old_vc4_state = to_fkms_crtc_state(crtc->state);
 	vc4_state->margins = old_vc4_state->margins;
 
 	__drm_atomic_helper_crtc_duplicate_state(crtc, &vc4_state->base);
@@ -1646,13 +1669,29 @@ static const struct drm_encoder_funcs vc4_fkms_encoder_funcs = {
 	.destroy = vc4_fkms_encoder_destroy,
 };
 
+static void vc4_fkms_display_power(struct drm_encoder *encoder, bool power)
+{
+	struct vc4_fkms_encoder *vc4_encoder = to_vc4_fkms_encoder(encoder);
+	struct vc4_dev *vc4 = to_vc4_dev(encoder->dev);
+
+	struct mailbox_display_pwr pwr = {
+		.tag1 = {RPI_FIRMWARE_SET_DISPLAY_POWER, 8, 0, },
+		.display = vc4_encoder->display_num,
+		.state = power ? 1 : 0,
+	};
+
+	rpi_firmware_property_list(vc4->firmware, &pwr, sizeof(pwr));
+}
+
 static void vc4_fkms_encoder_enable(struct drm_encoder *encoder)
 {
+	vc4_fkms_display_power(encoder, true);
 	DRM_DEBUG_KMS("Encoder_enable\n");
 }
 
 static void vc4_fkms_encoder_disable(struct drm_encoder *encoder)
 {
+	vc4_fkms_display_power(encoder, false);
 	DRM_DEBUG_KMS("Encoder_disable\n");
 }
 
@@ -1728,6 +1767,8 @@ static int vc4_fkms_create_screen(struct device *dev, struct drm_device *drm,
 	if (!vc4_encoder)
 		return -ENOMEM;
 	vc4_crtc->encoder = &vc4_encoder->base;
+
+	vc4_encoder->display_num = display_ref;
 	vc4_encoder->base.possible_crtcs |= drm_crtc_mask(crtc) ;
 
 	drm_encoder_init(drm, &vc4_encoder->base, &vc4_fkms_encoder_funcs,

@@ -15,6 +15,7 @@
 		firmware: firmware {
 			compatible = "raspberrypi,bcm2835-firmware", "simple-bus";
 			mboxes = <&mailbox>;
+			dma-ranges;
 		};
 
 		power: power {
@@ -28,22 +29,6 @@
 			reg = <0x7e00b840 0x3c>;
 			interrupts = <0 2>;
 		};
-	};
-
-	vdd_3v3_reg: fixedregulator_3v3 {
-		compatible = "regulator-fixed";
-		regulator-name = "3v3";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-always-on;
-	};
-
-	vdd_5v0_reg: fixedregulator_5v0 {
-		compatible = "regulator-fixed";
-		regulator-name = "5v0";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		regulator-always-on;
 	};
 };
 
@@ -61,11 +46,15 @@
 	};
 };
 
-&i2c0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c0_gpio0>;
+&i2c0if {
 	status = "okay";
 	clock-frequency = <100000>;
+};
+
+&i2c0mux {
+	pinctrl-0 = <&i2c0_gpio0>;
+	/* pinctrl-1 varies based on platform */
+	status = "okay";
 };
 
 &i2c1 {
@@ -73,10 +62,6 @@
 	pinctrl-0 = <&i2c1_gpio2>;
 	status = "okay";
 	clock-frequency = <100000>;
-};
-
-&i2c2 {
-	status = "okay";
 };
 
 &usb {
@@ -94,12 +79,4 @@
 
 &dsi1 {
 	power-domains = <&power RPI_POWER_DOMAIN_DSI1>;
-};
-
-&csi0 {
-	power-domains = <&power RPI_POWER_DOMAIN_UNICAM0>;
-};
-
-&csi1 {
-	power-domains = <&power RPI_POWER_DOMAIN_UNICAM1>;
 };

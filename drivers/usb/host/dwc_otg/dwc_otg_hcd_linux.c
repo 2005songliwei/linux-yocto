@@ -138,7 +138,7 @@ static struct hc_driver dwc_otg_hc_driver = {
 
 	.irq = dwc_otg_hcd_irq,
 
-	.flags = HCD_MEMORY | HCD_USB2,
+	.flags = HCD_MEMORY | HCD_DMA | HCD_USB2,
 
 	//.reset =
 	.start = hcd_start,
@@ -482,8 +482,8 @@ static void hcd_init_fiq(void *cookie)
 			otg_dev->os_dep.mphi_base + 0x1f0;
 		dwc_otg_hcd->fiq_state->mphi_regs.swirq_clr =
 			otg_dev->os_dep.mphi_base + 0x1f4;
-		DWC_WARN("Fake MPHI regs_base at 0x%08x",
-			 (int)dwc_otg_hcd->fiq_state->mphi_regs.base);
+		DWC_WARN("Fake MPHI regs_base at %px",
+			 dwc_otg_hcd->fiq_state->mphi_regs.base);
 	} else {
 		dwc_otg_hcd->fiq_state->mphi_regs.ctrl =
 			otg_dev->os_dep.mphi_base + 0x4c;
@@ -821,10 +821,6 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 		dump_urb_info(urb, "dwc_otg_urb_enqueue");
 	}
 #endif
-
-	if (!urb->transfer_buffer && urb->transfer_buffer_length)
-		return -EINVAL;
-
 	if ((usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS)
 	    || (usb_pipetype(urb->pipe) == PIPE_INTERRUPT)) {
 		if (!dwc_otg_hcd_is_bandwidth_allocated
@@ -879,6 +875,13 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 		dev_warn_once(&urb->dev->dev,
 			      "USB transfer_buffer was NULL, will use __bus_to_virt(%pad)=%p\n",
 			      &urb->transfer_dma, buf);
+	}
+
+	if (!buf && urb->transfer_buffer_length) {
+		DWC_FREE(dwc_otg_urb);
+		DWC_ERROR("transfer_buffer is NULL in PIO mode or both "
+			   "transfer_buffer and transfer_dma are NULL in DMA mode\n");
+		return -EINVAL;
 	}
 
 	if (!(urb->transfer_flags & URB_NO_INTERRUPT))

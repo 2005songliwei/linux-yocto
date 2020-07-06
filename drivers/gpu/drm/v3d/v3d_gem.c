@@ -410,6 +410,9 @@ v3d_job_free(struct kref *ref)
 	}
 	xa_destroy(&job->deps);
 
+	dma_fence_put(job->irq_fence);
+	dma_fence_put(job->done_fence);
+
 	v3d_clock_up_put(v3d);
 
 	kfree(job);
@@ -914,6 +917,10 @@ v3d_gem_init(struct drm_device *dev)
 
 	mutex_init(&v3d->clk_lock);
 	INIT_DELAYED_WORK(&v3d->clk_down_work, v3d_clock_down_work);
+
+	/* kick the clock so firmware knows we are using firmware clock interface */
+	v3d_clock_up_get(v3d);
+	v3d_clock_up_put(v3d);
 
 	/* Note: We don't allocate address 0.  Various bits of HW
 	 * treat 0 as special, such as the occlusion query counters

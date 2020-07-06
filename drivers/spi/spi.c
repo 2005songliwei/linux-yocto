@@ -1775,15 +1775,6 @@ static int of_spi_parse_dt(struct spi_controller *ctlr, struct spi_device *spi,
 	}
 	spi->chip_select = value;
 
-	/*
-	 * For descriptors associated with the device, polarity inversion is
-	 * handled in the gpiolib, so all gpio chip selects are "active high"
-	 * in the logical sense, the gpiolib will invert the line if need be.
-	 */
-	if ((ctlr->use_gpio_descriptors) && ctlr->cs_gpiods &&
-	    ctlr->cs_gpiods[spi->chip_select])
-		spi->mode |= SPI_CS_HIGH;
-
 	/* Device speed */
 	rc = of_property_read_u32(nc, "spi-max-frequency", &value);
 	if (rc) {
@@ -3034,6 +3025,7 @@ static int __spi_validate_bits_per_word(struct spi_controller *ctlr,
  */
 int spi_setup(struct spi_device *spi)
 {
+	struct spi_controller *ctlr = spi->controller;
 	unsigned	bad_bits, ugly_bits;
 	int		status;
 
@@ -3051,6 +3043,14 @@ int spi_setup(struct spi_device *spi)
 		(SPI_TX_DUAL | SPI_TX_QUAD | SPI_TX_OCTAL |
 		 SPI_RX_DUAL | SPI_RX_QUAD | SPI_RX_OCTAL)))
 		return -EINVAL;
+
+	if (ctlr->use_gpio_descriptors && ctlr->cs_gpiods &&
+	    ctlr->cs_gpiods[spi->chip_select] && !(spi->mode & SPI_CS_HIGH)) {
+		dev_dbg(&spi->dev,
+			"setup: forcing CS_HIGH (use_gpio_descriptors)\n");
+		spi->mode |= SPI_CS_HIGH;
+	}
+
 	/* help drivers fail *cleanly* when they need options
 	 * that aren't supported with their current controller
 	 * SPI_CS_WORD has a fallback software implementation,

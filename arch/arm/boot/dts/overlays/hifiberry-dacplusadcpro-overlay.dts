@@ -3,10 +3,10 @@
 /plugin/;
 
 / {
-	compatible = "brcm,bcm2708";
+	compatible = "brcm,bcm2835";
 
 	fragment@0 {
-		target-path = "/clocks";
+		target-path = "/";
 		__overlay__ {
 			dacpro_osc: dacpro_osc {
 				compatible = "hifiberry,dacpro-clk";
@@ -60,5 +60,6 @@
 		24db_digital_gain =
 			<&hifiberry_dacplusadcpro>,"hifiberry-dacplusadcpro,24db_digital_gain?";
 		slave = <&hifiberry_dacplusadcpro>,"hifiberry-dacplusadcpro,slave?";
+		leds_off = <&hifiberry_dacplusadcpro>,"hifiberry-dacplusadcpro,leds_off?";
 	};
 };

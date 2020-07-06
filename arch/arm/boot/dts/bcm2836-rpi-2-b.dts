@@ -4,7 +4,6 @@
 #include "bcm2836-rpi.dtsi"
 #include "bcm283x-rpi-smsc9514.dtsi"
 #include "bcm283x-rpi-usb-host.dtsi"
-#include "bcm283x-rpi-csi1-2lane.dtsi"
 
 / {
 	compatible = "raspberrypi,2-model-b", "brcm,bcm2836";
@@ -135,4 +134,9 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_gpio14>;
 	status = "okay";
+};
+
+/* i2c on camera/display connector is gpio 28&29 */
+&i2c0mux {
+	pinctrl-1 = <&i2c0_gpio28>;
 };
