@@ -49,6 +49,8 @@ static inline void mmdrop(struct mm_struct *mm)
 		__mmdrop(mm);
 }
 
+void mmdrop(struct mm_struct *mm);
+
 #ifdef CONFIG_PREEMPT_RT_BASE
 extern void __mmdrop_delayed(struct rcu_head *rhp);
 static inline void mmdrop_delayed(struct mm_struct *mm)
