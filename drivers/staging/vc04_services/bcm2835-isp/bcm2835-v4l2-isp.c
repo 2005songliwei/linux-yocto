@@ -1231,7 +1231,7 @@ static int register_node(struct bcm2835_isp_dev *dev,
 		return ret;
 
 	/* Initialise the the video node. */
-	vfd->vfl_type	= VFL_TYPE_GRABBER;
+	vfd->vfl_type	= VFL_TYPE_VIDEO;
 	vfd->fops	= &bcm2835_isp_fops,
 	vfd->ioctl_ops	= &bcm2835_isp_node_ioctl_ops,
 	vfd->minor	= -1,
@@ -1273,7 +1273,7 @@ static int register_node(struct bcm2835_isp_dev *dev,
 	snprintf(vfd->name, sizeof(node->vfd.name), "%s-%s%d", BCM2835_ISP_NAME,
 		 node->name, node->id);
 
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr + index);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, video_nr + index);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev,
 			 "Failed to register video %s[%d] device node\n",

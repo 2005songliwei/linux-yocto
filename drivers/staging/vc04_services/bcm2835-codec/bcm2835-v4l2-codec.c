@@ -2755,7 +2755,7 @@ static int bcm2835_codec_create(struct bcm2835_codec_driver *drv,
 		goto unreg_dev;
 	}
 
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, video_nr);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 		goto unreg_dev;
