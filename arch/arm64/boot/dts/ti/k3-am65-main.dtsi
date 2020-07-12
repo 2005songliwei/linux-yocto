@@ -255,6 +255,7 @@
 		mmc-hs200-1_8v;
 		ti,otap-del-sel = <0x2>;
 		ti,trm-icp = <0x8>;
+		wp-inverted = <0x1>;
 		dma-coherent;
 	};
 
@@ -267,6 +268,7 @@
 		interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH>;
 		ti,otap-del-sel = <0x2>;
 		ti,trm-icp = <0x8>;
+		wp-inverted = <0x1>;
 		no-1-8-v;
 		dma-coherent;
 	};
