@@ -3,6 +3,9 @@
 # Makefile for Marvell's OcteonTX2 BPHY RFOE netdev driver
 #
 
-obj-$(CONFIG_OCTEONTX2_BPHY_RFOE_NETDEV) += octeontx2_rfoe.o
+obj-$(CONFIG_OCTEONTX2_BPHY_RFOE_NETDEV) += octeontx2_bphy_netdev.o
 
-octeontx2_rfoe-y := otx2_rfoe.o otx2_rfoe_ethtool.o
+#EXTRA_CFLAGS += -DDEBUG
+
+octeontx2_bphy_netdev-y := otx2_bphy_main.o otx2_rfoe.o otx2_rfoe_ethtool.o \
+				otx2_cpri.o otx2_cpri_ethtool.o

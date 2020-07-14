@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Marvell OcteonTx2 RFOE Ethernet Driver
+/* SPDX-License-Identifier: GPL-2.0
+ * Marvell OcteonTx2 BPHY RFOE/CPRI Ethernet Driver
  *
  * Copyright (C) 2020 Marvell International Ltd.
  *
@@ -8,8 +8,8 @@
  * published by the Free Software Foundation.
  */
 
-#ifndef OTX2_BPHY_HW_H
-#define OTX2_BPHY_HW_H
+#ifndef _OTX2_BPHY_HW_H_
+#define _OTX2_BPHY_HW_H_
 
 #include <linux/types.h>
 
@@ -66,6 +66,80 @@
 #define RFOEX_TX_PTP_TSTMP_W1(a, b)	(0x7C0ULL | \
 					 (((unsigned long)(a) << 36)) | \
 					 ((b) << 3))
+
+/* PTP register offsets */
+#define MIO_PTP_CLOCK_HI		0x10
+
+/* BCN register offsets and definitions */
+#define BCN_CAPTURE_CFG			0x10400
+#define BCN_CAPTURE_N1_N2		0x10410
+#define BCN_CAPTURE_PTP			0x10430
+
+/* BCN_CAPTURE_CFG register definitions */
+#define CAPT_EN				BIT(0)
+#define CAPT_TRIG_SW			(3UL << 8)
+
+/* CPRI register offsets */
+#define CPRIX_RXD_GMII_UL_CBUF_CFG1(a)		(0x1000ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_RXD_GMII_UL_CBUF_CFG2(a)		(0x1008ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_RXD_GMII_UL_RD_DOORBELL(a)	(0x1010ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_RXD_GMII_UL_SW_RD_PTR(a)		(0x1018ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_RXD_GMII_UL_NXT_WR_PTR(a)		(0x1020ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_RXD_GMII_UL_PKT_COUNT(a)		(0x1028ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_TXD_GMII_DL_CBUF_CFG1(a)		(0x1100ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_TXD_GMII_DL_CBUF_CFG2(a)		(0x1108ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_TXD_GMII_DL_WR_DOORBELL(a)	(0x1110ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_TXD_GMII_DL_SW_WR_PTR(a)		(0x1118ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_TXD_GMII_DL_NXT_RD_PTR(a)		(0x1120ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_ETH_UL_INT(a)			(0x280ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_ETH_UL_INT_ENA_W1S(a)		(0x288ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_ETH_UL_INT_ENA_W1C(a)		(0x290ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_ETH_UL_INT_W1S(a)			(0x298ULL | \
+						 ((unsigned long)(a) << 36))
+#define CPRIX_ETH_BAD_CRC_CNT(a, b)		(0x400ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_ERR_CNT(a, b)		(0x408ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_OSIZE_CNT(a, b)		(0x410ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_USIZE_CNT(a, b)		(0x418ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_FIFO_ORUN_CNT(a, b)	(0x420ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_GPKTS_CNT(a, b)		(0x428ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_BOCT_CNT(a, b)		(0x430ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_UL_GOCT_CNT(a, b)		(0x438ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_DL_GOCTETS_CNT(a, b)		(0x440ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
+#define CPRIX_ETH_DL_GPKTS_CNT(a, b)		(0x448ULL | \
+						 ((unsigned long)(a) << 36) | \
+						 ((unsigned long)(b) << 11))
 
 /* MHAB definitions */
 struct mhbw_jd_dma_cfg_word_0_s {
@@ -261,4 +335,29 @@ struct mhab_job_desc_cfg {
 	struct rfoex_abx_slotx_configuration2 cfg2;
 } __packed;
 
-#endif	/* OTX2_BPHY_HW_H */
+/* CPRI definitions */
+struct cpri_pkt_dl_wqe_hdr {
+	u64 lane_id		: 2;
+	u64 reserved1		: 2;
+	u64 mhab_id		: 2;
+	u64 reserved2		: 2;
+	u64 pkt_length		: 11;
+	u64 reserved3		: 45;
+	u64 w1;
+};
+
+struct cpri_pkt_ul_wqe_hdr {
+	u64 lane_id		: 2;
+	u64 reserved1		: 2;
+	u64 mhab_id		: 2;
+	u64 reserved2		: 2;
+	u64 pkt_length		: 11;
+	u64 reserved3		: 5;
+	u64 fcserr		: 1;
+	u64 rsp_ferr		: 1;
+	u64 rsp_nferr		: 1;
+	u64 reserved4		: 37;
+	u64 w1;
+};
+
+#endif	/* _OTX2_BPHY_HW_H_ */
