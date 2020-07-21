@@ -17,10 +17,9 @@ obj-$(CONFIG_DRM_IMX_DPU) += dpu/
 obj-$(CONFIG_DRM_IMX_HDMI) += dw_hdmi-imx.o
 obj-$(CONFIG_IMX8MP_HDMI_PAVI) += imx8mp-hdmi-pavi.o
 obj-$(CONFIG_DRM_IMX_DCSS) += dcss/
-obj-$(CONFIG_DRM_IMX_CDNS_MHDP) += cdn-mhdp-imxdrv.o cdn-mhdp-dp-phy.o cdn-mhdp-hdmi-phy.o cdn-mhdp-imx8qm.o cdn-mhdp-ls1028a.o
 obj-$(CONFIG_DRM_IMX_SEC_DSIM) += sec_mipi_dsim-imx.o
 obj-$(CONFIG_DRM_IMX_LCDIF) += lcdif/
 obj-$(CONFIG_DRM_IMX_LCDIFV3) += lcdifv3/
 
 cdns_mhdp_imx-objs := cdn-mhdp-imxdrv.o cdn-mhdp-dp-phy.o cdn-mhdp-hdmi-phy.o cdn-mhdp-imx8qm.o cdn-mhdp-ls1028a.o
-obj-$(CONFIG_DRM_IMX_CDNS_MHDP) += cdns_mhdp_imx.o
+obj-$(CONFIG_DRM_IMX_CDNS_MHDP) += mhdp/
