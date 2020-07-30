@@ -3,7 +3,7 @@
  * caam - Freescale FSL CAAM support for crypto API
  *
  * Copyright 2008-2011 Freescale Semiconductor, Inc.
- * Copyright 2016-2019 NXP
+ * Copyright 2016-2020 NXP
  *
  * Based on talitos crypto API driver.
  *
@@ -750,47 +750,16 @@ static int skcipher_setkey(struct crypto_skcipher *skcipher, const u8 *key,
 	print_hex_dump_debug("key in @"__stringify(__LINE__)": ",
 			     DUMP_PREFIX_ADDRESS, 16, 4, key, keylen, 1);
 
-	ctx->cdata.keylen = keylen;
-	ctx->cdata.key_virt = key;
-	ctx->cdata.key_inline = true;
-
-#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
 	/*
-	 * Check if the key is not in plaintext format
+	 * If the algorithm has support for tagged key,
+	 * this is already set in tk_skcipher_setkey().
+	 * Otherwise, set here the algorithm details.
 	 */
-	if (alg->caam.support_tagged_key) {
-		struct tag_object_conf *tagged_key_conf;
-		int ret;
-
-		/* Get the configuration */
-		ret = get_tag_object_conf(ctx->cdata.key_virt,
-					  ctx->cdata.keylen, &tagged_key_conf);
-		if (ret) {
-			dev_err(jrdev,
-				"caam algorithms can't process tagged key\n");
-			return ret;
-		}
-
-		/* Only support black key */
-		if (!is_bk_conf(tagged_key_conf)) {
-			dev_err(jrdev,
-				"The tagged key provided is not a black key\n");
-			return -EINVAL;
-		}
-
-		get_blackey_conf(&tagged_key_conf->conf.bk_conf,
-				 &ctx->cdata.key_real_len,
-				 &ctx->cdata.key_cmd_opt);
-
-		ret = get_tagged_data(ctx->cdata.key_virt, ctx->cdata.keylen,
-				      &ctx->cdata.key_virt, &ctx->cdata.keylen);
-		if (ret) {
-			dev_err(jrdev,
-				"caam algorithms wrong data from tagged key\n");
-			return ret;
-		}
+	if (!alg->caam.support_tagged_key) {
+		ctx->cdata.keylen = keylen;
+		ctx->cdata.key_virt = key;
+		ctx->cdata.key_inline = true;
 	}
-#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
 
 	/* skcipher_encrypt shared descriptor */
 	desc = ctx->sh_desc_enc;
@@ -3517,8 +3486,7 @@ static void caam_skcipher_alg_init(struct caam_skcipher_alg *t_alg)
 	struct skcipher_alg *alg = &t_alg->skcipher;
 
 	alg->base.cra_module = THIS_MODULE;
-	alg->base.cra_priority =
-		t_alg->caam.support_tagged_key ? 1 : CAAM_CRA_PRIORITY;
+	alg->base.cra_priority = CAAM_CRA_PRIORITY;
 	alg->base.cra_ctxsize = sizeof(struct caam_ctx);
 	alg->base.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY;
 
