@@ -856,6 +856,8 @@ static int imx219_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->pad == IMAGE_PAD) {
 		if (fse->index >= ARRAY_SIZE(supported_modes))
 			return -EINVAL;
+	if (fse->code != imx219_get_format_code(imx219, fse->code))
+		return -EINVAL;
 
 		if (fse->code != imx219_get_format_code(imx219, fse->code))
 			return -EINVAL;
