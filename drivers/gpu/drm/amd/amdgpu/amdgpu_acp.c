@@ -318,7 +318,7 @@ static int acp_hw_init(void *handle)
 							GFP_KERNEL);
 
 	if (adev->acp.acp_cell == NULL) {
-		return -ENOMEM;
+		r = -ENOMEM;
 		goto failure;
 	}
 
