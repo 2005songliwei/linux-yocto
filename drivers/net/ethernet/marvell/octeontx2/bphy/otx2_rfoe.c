@@ -105,25 +105,14 @@ void otx2_rfoe_disable_intf(int rfoe_num)
 	struct otx2_rfoe_drv_ctx *drv_ctx;
 	struct otx2_rfoe_ndev_priv *priv;
 	struct net_device *netdev;
-	struct rx_ft_cfg *ft_cfg;
-	int idx, pkt_type;
+	int idx;
 
 	for (idx = 0; idx < RFOE_MAX_INTF; idx++) {
 		drv_ctx = &rfoe_drv_ctx[idx];
 		if (drv_ctx->rfoe_num == rfoe_num && drv_ctx->valid) {
 			netdev = drv_ctx->netdev;
 			priv = netdev_priv(netdev);
-			unregister_netdev(netdev);
-			for (pkt_type = 0; pkt_type < PACKET_TYPE_MAX;
-			     pkt_type++) {
-				if (!(priv->pkt_type_mask & (1U << pkt_type)))
-					continue;
-				ft_cfg = &priv->rx_ft_cfg[pkt_type];
-				netif_napi_del(&ft_cfg->napi);
-			}
-			kfree(priv->rfoe_common);
-			free_netdev(netdev);
-			drv_ctx->valid = 0;
+			priv->if_type = IF_TYPE_NONE;
 		}
 	}
 }
@@ -165,6 +154,7 @@ static void otx2_rfoe_calc_ptp_ts(struct otx2_rfoe_ndev_priv *priv,
 {
 	u64 ptp_diff_nsec, ptp_diff_psec;
 	struct ptp_bcn_off_cfg *ptp_cfg;
+	struct ptp_clk_cfg *clk_cfg;
 	struct ptp_bcn_ref *ref;
 	unsigned long flags;
 	u64 timestamp = *ts;
@@ -172,6 +162,7 @@ static void otx2_rfoe_calc_ptp_ts(struct otx2_rfoe_ndev_priv *priv,
 	ptp_cfg = priv->ptp_cfg;
 	if (!ptp_cfg->use_ptp_alg)
 		return;
+	clk_cfg = &ptp_cfg->clk_cfg;
 
 	spin_lock_irqsave(&ptp_cfg->lock, flags);
 
@@ -182,7 +173,7 @@ static void otx2_rfoe_calc_ptp_ts(struct otx2_rfoe_ndev_priv *priv,
 
 	/* calculate ptp timestamp diff in pico sec */
 	ptp_diff_psec = ((timestamp - ref->ptp0_ns) * PICO_SEC_PER_NSEC *
-			 PTP_CLK_FREQ_MULT_GHZ) / PTP_CLK_FREQ_DIV_GHZ;
+			 clk_cfg->clk_freq_div) / clk_cfg->clk_freq_ghz;
 	ptp_diff_nsec = (ptp_diff_psec + ref->bcn0_n2_ps + 500) /
 			PICO_SEC_PER_NSEC;
 	timestamp = ref->bcn0_n1_ns - priv->sec_bcn_offset + ptp_diff_nsec;
@@ -196,6 +187,7 @@ static void otx2_rfoe_ptp_offset_timer(struct timer_list *t)
 {
 	struct ptp_bcn_off_cfg *ptp_cfg = from_timer(ptp_cfg, t, ptp_timer);
 	u64 mio_ptp_ts, ptp_ts_diff, ptp_diff_nsec, ptp_diff_psec;
+	struct ptp_clk_cfg *clk_cfg = &ptp_cfg->clk_cfg;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ptp_cfg->lock, flags);
@@ -206,7 +198,7 @@ static void otx2_rfoe_ptp_offset_timer(struct timer_list *t)
 	mio_ptp_ts = readq(ptp_reg_base + MIO_PTP_CLOCK_HI);
 	ptp_ts_diff = mio_ptp_ts - ptp_cfg->new_ref.ptp0_ns;
 	ptp_diff_psec = (ptp_ts_diff * PICO_SEC_PER_NSEC *
-			 PTP_CLK_FREQ_MULT_GHZ) / PTP_CLK_FREQ_DIV_GHZ;
+			 clk_cfg->clk_freq_div) / clk_cfg->clk_freq_ghz;
 	ptp_diff_nsec = ptp_diff_psec / PICO_SEC_PER_NSEC;
 	ptp_cfg->new_ref.ptp0_ns += ptp_ts_diff;
 	ptp_cfg->new_ref.bcn0_n1_ns += ptp_diff_nsec;
@@ -822,6 +814,15 @@ static netdev_tx_t otx2_rfoe_eth_start_xmit(struct sk_buff *skb,
 
 	spin_lock_irqsave(&job_cfg->lock, flags);
 
+	if (unlikely(priv->if_type != IF_TYPE_ETHERNET)) {
+		netif_err(priv, tx_queued, netdev,
+			  "%s {rfoe%d lmac%d} invalid intf mode, drop pkt\n",
+			  netdev->name, priv->rfoe_num, priv->lmac_id);
+		/* update stats */
+		priv->stats.tx_dropped++;
+		goto exit;
+	}
+
 	if (unlikely(!netif_carrier_ok(netdev))) {
 		netif_err(priv, tx_err, netdev,
 			  "%s {rfoe%d lmac%d} link down, drop pkt\n",
@@ -1185,14 +1186,11 @@ int otx2_rfoe_parse_and_init_intf(struct otx2_bphy_cdev_priv *cdev,
 	if (!ptp_cfg)
 		return -ENOMEM;
 	timer_setup(&ptp_cfg->ptp_timer, otx2_rfoe_ptp_offset_timer, 0);
+	ptp_cfg->clk_cfg.clk_freq_ghz = PTP_CLK_FREQ_GHZ;
+	ptp_cfg->clk_cfg.clk_freq_div = PTP_CLK_FREQ_DIV;
 	spin_lock_init(&ptp_cfg->lock);
 
 	for (i = 0; i < MAX_RFOE_INTF; i++) {
-		/* Don't initialize rfoe i/f when cpri is default mode.
-		 * The mode switching from cpri to rfoe is not supported.
-		 */
-		if (cfg[i].if_type != IF_TYPE_ETHERNET)
-			continue;
 		priv2 = NULL;
 		rfoe_cfg = &cfg[i].rfoe_if_cfg;
 		pkt_type_mask = rfoe_cfg->pkt_type_mask;
@@ -1233,6 +1231,7 @@ int otx2_rfoe_parse_and_init_intf(struct otx2_bphy_cdev_priv *cdev,
 			spin_lock_init(&priv->stats.lock);
 			priv->rfoe_num = if_cfg->lmac_info.rfoe_num;
 			priv->lmac_id = if_cfg->lmac_info.lane_num;
+			priv->if_type = cfg[i].if_type;
 			memcpy(priv->mac_addr, if_cfg->lmac_info.eth_addr,
 			       ETH_ALEN);
 			if (is_valid_ether_addr(priv->mac_addr))

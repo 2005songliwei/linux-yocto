@@ -85,6 +85,15 @@ static irqreturn_t otx2_bphy_intr_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static inline void msix_enable_ctrl(struct pci_dev *dev)
+{
+	u16 control;
+
+	pci_read_config_word(dev, dev->msix_cap + PCI_MSIX_FLAGS, &control);
+	control |= PCI_MSIX_FLAGS_ENABLE;
+	pci_write_config_word(dev, dev->msix_cap + PCI_MSIX_FLAGS, control);
+}
+
 static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 				 unsigned long arg)
 {
@@ -102,6 +111,7 @@ static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 	case OTX2_RFOE_IOCTL_ODP_INTF_CFG:
 	{
 		struct bphy_netdev_comm_intf_cfg *intf_cfg;
+		struct pci_dev *bphy_pdev;
 		int idx;
 
 		if (cdev->odp_intf_cfg) {
@@ -139,6 +149,19 @@ static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 			dev_err(cdev->dev, "odp <-> netdev parse error\n");
 			goto out;
 		}
+
+		/* The MSIXEN bit is getting cleared when ODP BPHY driver
+		 * resets BPHY. So enabling it back in IOCTL.
+		 */
+		bphy_pdev = pci_get_device(OTX2_BPHY_PCI_VENDOR_ID,
+					   OTX2_BPHY_PCI_DEVICE_ID, NULL);
+		if (!bphy_pdev) {
+			dev_err(cdev->dev, "Couldn't find BPHY PCI device %x\n",
+				OTX2_BPHY_PCI_DEVICE_ID);
+			ret = -ENODEV;
+			goto out;
+		}
+		msix_enable_ctrl(bphy_pdev);
 
 		/* Enable CPRI ETH UL INT */
 		for (idx = 0; idx < OTX2_BPHY_CPRI_MAX_MHAB; idx++) {
@@ -225,8 +248,9 @@ static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 	{
 		u64 bcn_n1, bcn_n2, bcn_n1_ns, bcn_n2_ps, ptp0_ns, regval;
 		struct otx2_rfoe_drv_ctx *drv_ctx = NULL;
-		struct ptp_bcn_off_cfg *ptp_cfg;
 		struct otx2_rfoe_ndev_priv *priv;
+		struct ptp_bcn_off_cfg *ptp_cfg;
+		struct ptp_clk_cfg clk_cfg;
 		struct net_device *netdev;
 		struct ptp_bcn_ref ref;
 		int idx;
@@ -234,6 +258,17 @@ static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 		if (!cdev->odp_intf_cfg) {
 			dev_info(cdev->dev, "odp interface cfg is not done\n");
 			ret = -EBUSY;
+			goto out;
+		}
+		if (copy_from_user(&clk_cfg, (void __user *)arg,
+				   sizeof(struct ptp_clk_cfg))) {
+			dev_err(cdev->dev, "copy from user fault\n");
+			ret = -EFAULT;
+			goto out;
+		}
+		if (!(clk_cfg.clk_freq_ghz && clk_cfg.clk_freq_div)) {
+			dev_err(cdev->dev, "Invalid ptp clk parameters\n");
+			ret = -EINVAL;
 			goto out;
 		}
 		for (idx = 0; idx < RFOE_MAX_INTF; idx++) {
@@ -249,6 +284,8 @@ static long otx2_bphy_cdev_ioctl(struct file *filp, unsigned int cmd,
 		netdev = drv_ctx->netdev;
 		priv = netdev_priv(netdev);
 		ptp_cfg = priv->ptp_cfg;
+		ptp_cfg->clk_cfg.clk_freq_ghz = clk_cfg.clk_freq_ghz;
+		ptp_cfg->clk_cfg.clk_freq_div = clk_cfg.clk_freq_div;
 		/* capture ptp and bcn timestamp using BCN_CAPTURE_CFG */
 		writeq((CAPT_EN | CAPT_TRIG_SW),
 		       priv->bcn_reg_base + BCN_CAPTURE_CFG);
@@ -403,15 +440,6 @@ static const struct file_operations otx2_bphy_cdev_fops = {
 	.open		= otx2_bphy_cdev_open,
 	.release	= otx2_bphy_cdev_release,
 };
-
-static inline void msix_enable_ctrl(struct pci_dev *dev)
-{
-	u16 control;
-
-	pci_read_config_word(dev, dev->msix_cap + PCI_MSIX_FLAGS, &control);
-	control |= PCI_MSIX_FLAGS_ENABLE;
-	pci_write_config_word(dev, dev->msix_cap + PCI_MSIX_FLAGS, control);
-}
 
 static int otx2_bphy_probe(struct platform_device *pdev)
 {
