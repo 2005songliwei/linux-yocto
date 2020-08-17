@@ -118,6 +118,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	ov7251.dtbo \
 	ov9281.dtbo \
 	papirus.dtbo \
+	pca953x.dtbo \
 	pibell.dtbo \
 	piglow.dtbo \
 	piscreen.dtbo \
