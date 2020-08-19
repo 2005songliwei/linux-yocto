@@ -1839,10 +1839,12 @@ static void otx2_reset_task(struct work_struct *work)
 	if (!netif_running(pf->netdev))
 		return;
 
+	rtnl_lock();
 	otx2_stop(pf->netdev);
 	pf->reset_count++;
 	otx2_open(pf->netdev);
 	netif_trans_update(pf->netdev);
+	rtnl_unlock();
 }
 
 static int otx2_config_hw_rx_tstamp(struct otx2_nic *pfvf, bool enable)
@@ -2693,6 +2695,7 @@ static void otx2_remove(struct pci_dev *pdev)
 
 	otx2_set_npc_parse_mode(pf, true);
 
+	cancel_work_sync(&pf->reset_task);
 	/* Disable link notifications */
 	otx2_cgx_config_linkevents(pf, false);
 
