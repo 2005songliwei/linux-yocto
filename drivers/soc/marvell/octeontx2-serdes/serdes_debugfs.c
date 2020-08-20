@@ -29,6 +29,8 @@ MODULE_LICENSE("GPL v2");
 #define OCTEONTX_SERDES_DBG_GET_EYE	0xc2000d05
 #define OCTEONTX_SERDES_DBG_GET_CONF	0xc2000d06
 #define OCTEONTX_SERDES_DBG_PRBS	0xc2000d07
+#define OCTEONTX_SERDES_DBG_SET_TUNE	0xc2000d08
+#define OCTEONTX_SERDES_DBG_SET_LOOP	0xc2000d09
 
 /* This is expected OcteonTX response for SVC UID command */
 static const int octeontx_svc_uuid[] = {
@@ -72,6 +74,7 @@ struct cgx_prbs_data {
 struct prbs_status {
 	struct list_head list;
 	int qlm;
+	int qlm_lane;
 	long start_time;
 	struct prbs_status *next;
 };
@@ -94,6 +97,22 @@ static struct {
 	int lane;
 	char *res;
 } serdes_cmd_data;
+
+static struct {
+	int qlm;
+	int lane;
+	int swing;
+	int pre;
+	int post;
+	char *res;
+} tune_serdes_cmd;
+
+static struct {
+	int qlm;
+	int lane;
+	int type;
+	char *res;
+} loop_serdes_cmd;
 
 static struct {
 	int qlm;
@@ -413,6 +432,210 @@ static const struct file_operations serdes_dbg_settings_fops = {
 	.release	= single_release,
 };
 
+static int tune_serdes_dbg_lane_parse(const char __user *buffer,
+				 size_t count, int *qlm, int *lane,
+				 int *swing, int *pre, int *post)
+{
+	char *cmd_buf, *cmd_buf_tmp, *subtoken;
+	int ec;
+
+	cmd_buf = memdup_user(buffer, count);
+	if (IS_ERR(cmd_buf))
+		return -ENOMEM;
+
+	cmd_buf[count] = '\0';
+
+	cmd_buf_tmp = strchr(cmd_buf, '\n');
+	if (cmd_buf_tmp) {
+		*cmd_buf_tmp = '\0';
+		count = cmd_buf_tmp - cmd_buf + 1;
+	}
+
+	cmd_buf_tmp = cmd_buf;
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, qlm) : -EINVAL;
+
+	if (ec < 0) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, lane) : -EINVAL;
+
+	if (ec == -EINVAL) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, swing) : -EINVAL;
+
+	if (ec == -EINVAL) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, pre) : -EINVAL;
+
+	if (ec == -EINVAL) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, post) : -EINVAL;
+
+	kfree(cmd_buf_tmp);
+	return ec;
+}
+
+static int tune_serdes_dbg_settings_read_op(struct seq_file *s, void *unused)
+{
+	tune_serdes_cmd.res = '\0';
+
+	seq_printf(s, "%s", tune_serdes_cmd.res);
+
+	return 0;
+}
+
+static ssize_t tune_serdes_dbg_settings_write_op(struct file *filp,
+					    const char __user *buffer,
+					    size_t count, loff_t *ppos)
+{
+	struct arm_smccc_res res;
+	int ec;
+
+	ec = tune_serdes_dbg_lane_parse(buffer, count, &tune_serdes_cmd.qlm,
+			&tune_serdes_cmd.lane, &tune_serdes_cmd.swing,
+			&tune_serdes_cmd.pre, &tune_serdes_cmd.post);
+	if (ec < 0) {
+		pr_info("Usage: echo <qlm> <lane> <swing> <pre> <post> > tunetx\n");
+		return ec;
+	}
+
+	arm_smccc_smc(OCTEONTX_SERDES_DBG_SET_TUNE, tune_serdes_cmd.qlm,
+		tune_serdes_cmd.lane, tune_serdes_cmd.swing,
+		(tune_serdes_cmd.pre << 8) | (tune_serdes_cmd.post & 0xff),
+		0, 0, 0, &res);
+
+	if (res.a0 != SMCCC_RET_SUCCESS) {
+		pr_info("QLM serdes TX settings command failed.\n");
+		return -EIO;
+	}
+
+	return count;
+}
+
+static int tune_serdes_dbg_open_settings(struct inode *inode, struct file *file)
+{
+	return single_open(file, tune_serdes_dbg_settings_read_op,
+			inode->i_private);
+}
+
+static const struct file_operations tune_serdes_dbg_settings_fops = {
+	.owner		= THIS_MODULE,
+	.open		= tune_serdes_dbg_open_settings,
+	.read		= seq_read,
+	.write		= tune_serdes_dbg_settings_write_op,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int loop_serdes_dbg_lane_parse(const char __user *buffer,
+				 size_t count, int *qlm, int *lane,
+				 int *type)
+{
+	char *cmd_buf, *cmd_buf_tmp, *subtoken;
+	int ec;
+
+	cmd_buf = memdup_user(buffer, count);
+	if (IS_ERR(cmd_buf))
+		return -ENOMEM;
+
+	cmd_buf[count] = '\0';
+
+	cmd_buf_tmp = strchr(cmd_buf, '\n');
+	if (cmd_buf_tmp) {
+		*cmd_buf_tmp = '\0';
+		count = cmd_buf_tmp - cmd_buf + 1;
+	}
+
+	cmd_buf_tmp = cmd_buf;
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, qlm) : -EINVAL;
+
+	if (ec < 0) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, lane) : -EINVAL;
+
+	if (ec == -EINVAL) {
+		kfree(cmd_buf_tmp);
+		return ec;
+	}
+
+	subtoken = strsep(&cmd_buf, " ");
+	ec = subtoken ? kstrtoint(subtoken, 10, type) : -EINVAL;
+
+	kfree(cmd_buf_tmp);
+	return ec;
+}
+
+static ssize_t loop_serdes_dbg_settings_write_op(struct file *filp,
+					    const char __user *buffer,
+					    size_t count, loff_t *ppos)
+{
+	struct arm_smccc_res res;
+	int ec;
+
+	ec = loop_serdes_dbg_lane_parse(buffer, count, &loop_serdes_cmd.qlm,
+			&loop_serdes_cmd.lane, &loop_serdes_cmd.type);
+	if (ec < 0) {
+		pr_info("Usage: echo <qlm> <lane> <type> > loop\n");
+		return ec;
+	}
+
+	arm_smccc_smc(OCTEONTX_SERDES_DBG_SET_LOOP, loop_serdes_cmd.qlm,
+		loop_serdes_cmd.lane, loop_serdes_cmd.type,
+		0, 0, 0, 0, &res);
+
+	if (res.a0 != SMCCC_RET_SUCCESS) {
+		pr_info("QLM serdes loop command failed.\n");
+		return -EIO;
+	}
+
+	return count;
+}
+
+static int loop_serdes_dbg_settings_read_op(struct seq_file *s, void *unused)
+{
+	loop_serdes_cmd.res = '\0';
+
+	seq_printf(s, "%s", loop_serdes_cmd.res);
+
+	return 0;
+}
+
+static int loop_serdes_dbg_open_settings(struct inode *inode, struct file *file)
+{
+	return single_open(file, loop_serdes_dbg_settings_read_op,
+			inode->i_private);
+}
+
+static const struct file_operations loop_serdes_dbg_settings_fops = {
+	.owner		= THIS_MODULE,
+	.open		= loop_serdes_dbg_open_settings,
+	.read		= seq_read,
+	.write		= loop_serdes_dbg_settings_write_op,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int serdes_dbg_prbs_lane_parse(const char __user *buffer,
 				      size_t count, int *qlm,
 				      enum cgx_prbs_cmd *cmd, int *mode,
@@ -445,7 +668,7 @@ static int serdes_dbg_prbs_lane_parse(const char __user *buffer,
 	subtoken = strsep(&cmd_buf, " ");
 	ec = subtoken ? kstrtoint(subtoken, 10, qlm_lane) : -EINVAL;
 
-	if (ec == -EINVAL) {
+	if (ec == -EINVAL || *qlm_lane < 0) {
 		kfree(cmd_buf_tmp);
 		return ec;
 	}
@@ -502,7 +725,8 @@ static ssize_t serdes_dbg_prbs_write_op(struct file *filp,
 		list_for_each_entry(status,
 				    &prbs_cmd_data.status_list.list,
 				    list) {
-			if (status->qlm == qlm)
+			if ((status->qlm == qlm) &&
+					(status->qlm_lane == qlm_lane))
 				break;
 		}
 
@@ -528,14 +752,13 @@ static ssize_t serdes_dbg_prbs_write_op(struct file *filp,
 			if (status == NULL)
 				return -ENOMEM;
 			status->qlm = qlm;
+			status->qlm_lane = qlm_lane;
 			list_add(&status->list,
 				 &prbs_cmd_data.status_list.list);
 		}
 		status->start_time = get_seconds();
-		if (qlm_lane == -1)
-			pr_info("GSER PRBS-%d start on QLM %d (all lanes).\n", mode, qlm);
-		else
-			pr_info("GSER PRBS-%d start on QLM %d on lane %d.\n", mode, qlm, qlm_lane);
+		pr_info("GSER PRBS-%d start on QLM %d on lane %d.\n", mode,
+				qlm, qlm_lane);
 		break;
 
 	case CGX_PRBS_STOP_CMD:
@@ -548,16 +771,15 @@ static ssize_t serdes_dbg_prbs_write_op(struct file *filp,
 		list_for_each_entry(status,
 				    &prbs_cmd_data.status_list.list,
 				    list) {
-			if (status->qlm == qlm) {
+			if ((status->qlm == qlm) &&
+					(status->qlm_lane == qlm_lane)) {
 				list_del(&status->list);
 				kfree(status);
 				break;
 			}
 		}
-		if (qlm_lane == -1)
-			pr_info("GSER PRBS stop on QLM %d on all lanes.\n", qlm);
-		else
-			pr_info("GSER PRBS stop on QLM %d on Lane %d.\n", qlm, qlm_lane);
+		pr_info("GSER PRBS stop on QLM %d on Lane %d.\n", qlm,
+				qlm_lane);
 		break;
 
 	case CGX_PRBS_CLEAR_CMD:
@@ -567,15 +789,13 @@ static ssize_t serdes_dbg_prbs_write_op(struct file *filp,
 			pr_info("GSER prbs clear command failed.\n");
 			return -EIO;
 		}
-		if (qlm_lane == -1)
-			pr_info("GSER PRBS errors cleared on QLM%d\n", qlm);
-		else
-			pr_info("GSER PRBS errors cleared on QLM%d Lane%d\n",
-					qlm, qlm_lane);
+		pr_info("GSER PRBS errors cleared on QLM%d Lane%d\n", qlm,
+				qlm_lane);
 		break;
 
 	default:
-		pr_info("GSER PRBS set QLM %d to read.\n", qlm);
+		pr_info("GSER PRBS set QLM %d Lane %d to read.\n", qlm,
+				qlm_lane);
 		break;
 	}
 
@@ -604,8 +824,8 @@ static int serdes_dbg_prbs_read_op(struct seq_file *s, void *unused)
 	}
 
 	if (time == -1) {
-		seq_printf(s, "GSER PRBS not started for qlm %d lane%d.\n",
-				qlm, lane);
+		seq_printf(s, "GSER PRBS not started for QLM%d.Lane%d.\n", qlm,
+			lane);
 		return 0;
 	}
 
@@ -615,8 +835,8 @@ static int serdes_dbg_prbs_read_op(struct seq_file *s, void *unused)
 		      qlm, 0, lane, 0, 0, 0, &res);
 
 	if (res.a0 != SMCCC_RET_SUCCESS) {
-		seq_printf(s, "GSER prbs get command failed for QLM%d Lane%d\n",
-				qlm, lane);
+		seq_printf(s, "GSER prbs get command failed for QLM%d.Lane%d.\n",
+			qlm, lane);
 		return 0;
 	}
 
@@ -684,6 +904,16 @@ static int serdes_dbg_setup_debugfs(void)
 	if (!pfile)
 		goto create_failed;
 
+	pfile = debugfs_create_file("tunetx", 0644, pserdes_root, NULL,
+				    &tune_serdes_dbg_settings_fops);
+	if (!pfile)
+		goto create_failed;
+
+	pfile = debugfs_create_file("loop", 0644, pserdes_root, NULL,
+				    &loop_serdes_dbg_settings_fops);
+	if (!pfile)
+		goto create_failed;
+
 	return 0;
 
 create_failed:
@@ -729,6 +959,14 @@ static int serdes_dbg_init(void)
 	if (!prbs_cmd_data.res)
 		goto serdes_mem_init_failed;
 
+	tune_serdes_cmd.res = ioremap_wc(res.a0, sizeof(tune_serdes_cmd));
+	if (!tune_serdes_cmd.res)
+		goto serdes_mem_init_failed;
+
+	loop_serdes_cmd.res = ioremap_wc(res.a0, sizeof(loop_serdes_cmd));
+	if (!loop_serdes_cmd.res)
+		goto serdes_mem_init_failed;
+
 	ec = serdes_dbg_setup_debugfs();
 	if (ec)
 		goto serdes_debugfs_failed;
@@ -750,6 +988,12 @@ serdes_debugfs_failed:
 	if (prbs_cmd_data.res)
 		iounmap(prbs_cmd_data.res);
 
+	if (tune_serdes_cmd.res)
+		iounmap(tune_serdes_cmd.res);
+
+	if (loop_serdes_cmd.res)
+		iounmap(loop_serdes_cmd.res);
+
 	return 0;
 }
 
@@ -767,6 +1011,9 @@ static void serdes_dbg_exit(void)
 
 	if (prbs_cmd_data.res)
 		iounmap(prbs_cmd_data.res);
+
+	if (tune_serdes_cmd.res)
+		iounmap(tune_serdes_cmd.res);
 
 	list_for_each_entry_safe(status, n,
 				 &prbs_cmd_data.status_list.list,
