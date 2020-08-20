@@ -128,10 +128,10 @@ static void otx2vf_vfaf_mbox_handler(struct work_struct *work)
 		msg = (struct mbox_msghdr *)(mdev->mbase + offset);
 		otx2vf_process_vfaf_mbox_msg(af_mbox->pfvf, msg);
 		offset = mbox->rx_start + msg->next_msgoff;
+		if (mdev->msgs_acked == (af_mbox->num_msgs - 1))
+			__otx2_mbox_reset(mbox, 0);
 		mdev->msgs_acked++;
 	}
-
-	otx2_mbox_reset(mbox, 0);
 }
 
 static int otx2vf_process_mbox_msg_up(struct otx2_nic *vf,
@@ -640,6 +640,9 @@ static int otx2vf_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Enable pause frames by default */
 	vf->flags |= OTX2_FLAG_RX_PAUSE_ENABLED;
 	vf->flags |= OTX2_FLAG_TX_PAUSE_ENABLED;
+
+	/* Set interface mode as Default */
+	vf->ethtool_flags |= OTX2_PRIV_FLAG_DEF_MODE;
 
 	return 0;
 
