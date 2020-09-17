@@ -34,6 +34,7 @@ enum npc_kpu_la_ltype {
 	NPC_LT_LA_HIGIG2_ETHER,
 	NPC_LT_LA_IH_NIX_HIGIG2_ETHER,
 	NPC_LT_LA_CH_LEN_90B_ETHER,
+	NPC_LT_LA_CPT_HDR,
 	NPC_LT_LA_CUSTOM0 = 0xE,
 	NPC_LT_LA_CUSTOM1 = 0xF,
 };
@@ -86,7 +87,6 @@ enum npc_kpu_ld_ltype {
 	NPC_LT_LD_CUSTOM0,
 	NPC_LT_LD_CUSTOM1,
 	NPC_LT_LD_IGMP = 8,
-	NPC_LT_LD_ESP,
 	NPC_LT_LD_AH,
 	NPC_LT_LD_GRE,
 	NPC_LT_LD_NVGRE,
@@ -98,6 +98,7 @@ enum npc_kpu_ld_ltype {
 enum npc_kpu_le_ltype {
 	NPC_LT_LE_VXLAN = 1,
 	NPC_LT_LE_GENEVE,
+	NPC_LT_LE_ESP,
 	NPC_LT_LE_GTPU = 4,
 	NPC_LT_LE_VXLANGPE,
 	NPC_LT_LE_GTPC,
@@ -146,7 +147,8 @@ enum npc_kpu_lh_ltype {
 };
 
 enum npc_pkind_type {
-	NPC_RX_CHLEN90B_PKIND = 59ULL,
+	NPC_RX_CPT_HDR_PKIND = 58ULL,
+	NPC_RX_CHLEN90B_PKIND,
 	NPC_TX_HIGIG_PKIND,
 	NPC_RX_HIGIG_PKIND,
 	NPC_RX_EDSA_PKIND,

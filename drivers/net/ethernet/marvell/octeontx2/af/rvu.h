@@ -39,7 +39,6 @@
 #define RVU_PFVF_FUNC_SHIFT	0
 #define RVU_PFVF_FUNC_MASK	0x3FF
 
-/* CONFIG_DEBUG_FS */
 #ifdef CONFIG_DEBUG_FS
 struct dump_ctx {
 	int	lf;
@@ -72,7 +71,7 @@ struct rvu_debugfs {
 	int npa_qsize_id;
 	int nix_qsize_id;
 };
-#endif /* CONFIG_DEBUG_FS */
+#endif
 
 struct rvu_work {
 	struct	work_struct work;
@@ -192,6 +191,7 @@ struct npc_mcam {
 	u16	*entry2cntr_map;
 	u16	*cntr2pfvf_map;
 	u16	*cntr_refcnt;
+	u16	*entry2target_pffunc;
 	u8	keysize;	/* MCAM keysize 112/224/448 bits */
 	u8	banks;		/* Number of MCAM banks */
 	u8	banks_per_entry;/* Number of keywords in key */
@@ -509,10 +509,9 @@ struct rvu {
 
 	struct ptp		*ptp;
 
-/* CONFIG_DEBUG_FS */
 #ifdef CONFIG_DEBUG_FS
 	struct rvu_debugfs	rvu_dbg;
-#endif /* CONFIG_DEBUG_FS */
+#endif
 };
 
 static inline void rvu_write64(struct rvu *rvu, u64 block, u64 offset, u64 val)
@@ -728,6 +727,7 @@ bool rvu_npc_write_default_rule(struct rvu *rvu, int blkaddr, int nixlf,
 int npc_mcam_verify_channel(struct rvu *rvu, u16 pcifunc, u8 intf, u16 channel);
 int npc_get_bank(struct npc_mcam *mcam, int index);
 void npc_mcam_enable_flows(struct rvu *rvu, u16 target);
+void npc_mcam_disable_flows(struct rvu *rvu, u16 target);
 void npc_enable_mcam_entry(struct rvu *rvu, struct npc_mcam *mcam,
 			   int blkaddr, int index, bool enable);
 void npc_read_mcam_entry(struct rvu *rvu, struct npc_mcam *mcam,
@@ -756,14 +756,13 @@ void rvu_ree_freemem(struct rvu *rvu);
 int rvu_ree_register_interrupts(struct rvu *rvu);
 void rvu_ree_unregister_interrupts(struct rvu *rvu);
 
-/* CONFIG_DEBUG_FS*/
 #ifdef CONFIG_DEBUG_FS
 void rvu_dbg_init(struct rvu *rvu);
 void rvu_dbg_exit(struct rvu *rvu);
 #else
 static inline void rvu_dbg_init(struct rvu *rvu) {}
 static inline void rvu_dbg_exit(struct rvu *rvu) {}
-#endif /* CONFIG_DEBUG_FS*/
+#endif
 
 /* HW workarounds/fixes */
 #include "npc.h"

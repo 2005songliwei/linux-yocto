@@ -86,7 +86,7 @@ struct mbox_msghdr {
 #define OTX2_MBOX_REQ_SIG (0xdead)
 #define OTX2_MBOX_RSP_SIG (0xbeef)
 	u16 sig;         /* Signature, for validating corrupted msgs */
-#define OTX2_MBOX_VERSION (0x0007)
+#define OTX2_MBOX_VERSION (0x0008)
 	u16 ver;         /* Version of msg's structure for this ID */
 	u16 next_msgoff; /* Offset of next msg within mailbox region */
 	int rc;          /* Msg process'ed response code */
@@ -768,6 +768,7 @@ struct nix_lf_alloc_rsp {
 	u8	cgx_links;  /* No. of CGX links present in HW */
 	u8	lbk_links;  /* No. of LBK links present in HW */
 	u8	sdp_links;  /* No. of SDP links present in HW */
+	u8	tx_link;    /* Transmit channel link number */
 };
 
 struct nix_lf_free_req {
@@ -954,6 +955,7 @@ struct nix_rss_flowkey_cfg {
 #define NIX_FLOW_KEY_TYPE_INNR_ETH_DMAC BIT(17)
 #define NIX_FLOW_KEY_TYPE_CH_LEN_90B    BIT(18)
 #define NIX_FLOW_KEY_TYPE_CUSTOM0	BIT(19)
+#define NIX_FLOW_KEY_TYPE_VLAN		BIT(20)
 #define NIX_FLOW_KEY_TYPE_L4_DST_ONLY BIT(28)
 #define NIX_FLOW_KEY_TYPE_L4_SRC_ONLY BIT(29)
 #define NIX_FLOW_KEY_TYPE_L3_DST_ONLY BIT(30)
@@ -1042,7 +1044,7 @@ struct nix_bp_cfg_req {
 	u16	chan_base; /* Starting channel number */
 	u8	chan_cnt; /* Number of channels */
 	u8	bpid_per_chan;
-	/* bpid_per_chan = 0  assigns single bp id for range of channels */
+	/* bpid_per_chan = 0 assigns single bp id for range of channels */
 	/* bpid_per_chan = 1 assigns separate bp id for each channel */
 };
 
@@ -1617,6 +1619,8 @@ enum ree_af_status {
 	REE_AF_ERR_RULE_DBI_ALLOC_FAILED	= -1021,
 	REE_AF_ERR_LF_WRONG_PRIORITY		= -1022,
 	REE_AF_ERR_LF_SIZE_TOO_BIG		= -1023,
+	REE_AF_ERR_GRAPH_ADDRESS_TOO_BIG	= -1024,
+	REE_AF_ERR_BAD_RULE_TYPE		= -1025,
 };
 
 /* REE mbox message formats */
