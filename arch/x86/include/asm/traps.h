@@ -119,6 +119,8 @@ asmlinkage void smp_irq_move_cleanup_interrupt(void);
 extern void ist_enter(struct pt_regs *regs);
 extern void ist_exit(struct pt_regs *regs);
 
+bool fault_in_kernel_space(unsigned long address);
+
 #ifdef CONFIG_VMAP_STACK
 void __noreturn handle_stack_overflow(const char *message,
 				      struct pt_regs *regs,
