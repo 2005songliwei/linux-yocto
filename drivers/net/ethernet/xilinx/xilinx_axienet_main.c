@@ -390,6 +390,7 @@ static void xxvenet_setoptions(struct net_device *ndev, u32 options)
 void __axienet_device_reset(struct axienet_dma_q *q)
 {
 	u32 timeout;
+
 	/* Reset Axi DMA. This would reset Axi Ethernet core as well. The reset
 	 * process of Axi DMA takes a while to complete as all pending
 	 * commands/transfers will be flushed or completed during this
@@ -405,9 +406,11 @@ void __axienet_device_reset(struct axienet_dma_q *q)
 		if (--timeout == 0) {
 			netdev_err(q->lp->ndev, "%s: DMA reset timeout!\n",
 				   __func__);
-			break;
+			return -ETIMEDOUT;
 		}
 	}
+
+	return 0;
 }
 
 /**
@@ -420,8 +423,9 @@ void __axienet_device_reset(struct axienet_dma_q *q)
  * areconnected to Axi Ethernet reset lines, this in turn resets the Axi
  * Ethernet core. No separate hardware reset is done for the Axi Ethernet
  * core.
+ * Returns 0 on success or a negative error number otherwise.
  */
-static void axienet_device_reset(struct net_device *ndev)
+static int axienet_device_reset(struct net_device *ndev)
 {
 	u32 axienet_status;
 	struct axienet_local *lp = netdev_priv(ndev);
@@ -526,6 +530,8 @@ static void axienet_device_reset(struct net_device *ndev)
 	lp->axienet_config->setoptions(ndev, lp->options);
 
 	netif_trans_update(ndev);
+
+	return 0;
 }
 
 #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
