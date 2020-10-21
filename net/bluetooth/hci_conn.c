@@ -1322,7 +1322,6 @@ int hci_conn_check_link_mode(struct hci_conn *conn)
 		    conn->key_type != HCI_LK_AUTH_COMBINATION_P256)
 			return 0;
 	}
-
 	/* If Secure Simple Pairing is not enabled, then legacy connection
 	 * setup is used and no encryption or key sizes can be enforced.
 	 */
