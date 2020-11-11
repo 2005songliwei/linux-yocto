@@ -387,7 +387,7 @@ static void xxvenet_setoptions(struct net_device *ndev, u32 options)
 }
 
 
-void __axienet_device_reset(struct axienet_dma_q *q)
+static int __axienet_device_reset(struct axienet_dma_q *q)
 {
 	u32 timeout;
 
