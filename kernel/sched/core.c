@@ -5702,11 +5702,8 @@ void idle_task_exit(void)
 		switch_mm(mm, &init_mm, current);
 		finish_arch_post_lock_switch();
 	}
-	/*
-	 * Defer the cleanup to an alive cpu. On RT we can neither
-	 * call mmdrop() nor mmdrop_delayed() from here.
-	 */
-	per_cpu(idle_last_mm, smp_processor_id()) = mm;
+
+	/* finish_cpu(), as ran on the BP, will clean up the active_mm state */
 }
 
 /*
