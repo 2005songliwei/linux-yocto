@@ -870,9 +870,8 @@ static int __init s32gen1_add_pcie_port(struct pcie_port *pp,
 	DEBUG_FUNC;
 
 #ifdef CONFIG_PCI_MSI
-	ret = s32gen1_pcie_config_irq(&pp->msi_irq, "msi", pdev,
-				      s32gen1_pcie_msi_handler, pp);
-	if (ret) {
+	pp->msi_irq = platform_get_irq_byname(pdev, "msi");
+	if (pp->msi_irq <= 0) {
 		dev_err(&pdev->dev, "failed to request msi irq\n");
 		return ret;
 	}
