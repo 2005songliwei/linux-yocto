@@ -896,6 +896,9 @@ static int mcp251x_open(struct net_device *net)
 	if (!dev_fwnode(&spi->dev))
 		flags = IRQF_TRIGGER_FALLING;
 
+	if (spi->dev.of_node)
+	    flags = 0;
+
 	ret = request_threaded_irq(spi->irq, NULL, mcp251x_can_ist,
 				   flags | IRQF_ONESHOT, dev_name(&spi->dev),
 				   priv);

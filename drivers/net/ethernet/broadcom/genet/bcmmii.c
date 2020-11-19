@@ -274,10 +274,11 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 		id_mode_dis = BIT(16);
 		/* fall through */
 	case PHY_INTERFACE_MODE_RGMII_TXID:
+	case PHY_INTERFACE_MODE_RGMII_RXID:
 		if (id_mode_dis)
 			phy_name = "external RGMII (no delay)";
 		else
-			phy_name = "external RGMII (TX delay)";
+			phy_name = "external RGMII";
 		bcmgenet_sys_writel(priv,
 				    PORT_MODE_EXT_GPHY, SYS_PORT_CTRL);
 		break;
@@ -291,6 +292,7 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 	 */
 	if (priv->ext_phy) {
 		reg = bcmgenet_ext_readl(priv, EXT_RGMII_OOB_CTRL);
+		reg &= ~ID_MODE_DIS;
 		reg |= id_mode_dis;
 		if (GENET_IS_V1(priv) || GENET_IS_V2(priv) || GENET_IS_V3(priv))
 			reg |= RGMII_MODE_EN_V123;
@@ -316,6 +318,8 @@ int bcmgenet_mii_probe(struct net_device *dev)
 	/* Communicate the integrated PHY revision */
 	if (priv->internal_phy)
 		phy_flags = priv->gphy_rev;
+	else
+		phy_flags = PHY_BRCM_AUTO_PWRDWN_ENABLE;
 
 	/* Initialize link state variables that bcmgenet_mii_setup() uses */
 	priv->old_link = -1;

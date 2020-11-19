@@ -749,8 +749,9 @@ static int adv7180_set_pad_format(struct v4l2_subdev *sd,
 	return ret;
 }
 
-static int adv7180_g_mbus_config(struct v4l2_subdev *sd,
-				 struct v4l2_mbus_config *cfg)
+static int adv7180_get_mbus_config(struct v4l2_subdev *sd,
+				   unsigned int pad,
+				   struct v4l2_mbus_config *cfg)
 {
 	struct adv7180_state *state = to_state(sd);
 
@@ -841,7 +842,6 @@ static const struct v4l2_subdev_video_ops adv7180_video_ops = {
 	.querystd = adv7180_querystd,
 	.g_input_status = adv7180_g_input_status,
 	.s_routing = adv7180_s_routing,
-	.g_mbus_config = adv7180_g_mbus_config,
 	.g_pixelaspect = adv7180_g_pixelaspect,
 	.g_tvnorms = adv7180_g_tvnorms,
 	.s_stream = adv7180_s_stream,
@@ -857,6 +857,7 @@ static const struct v4l2_subdev_pad_ops adv7180_pad_ops = {
 	.enum_mbus_code = adv7180_enum_mbus_code,
 	.set_fmt = adv7180_set_pad_format,
 	.get_fmt = adv7180_get_pad_format,
+	.get_mbus_config = adv7180_get_mbus_config,
 };
 
 static const struct v4l2_subdev_sensor_ops adv7180_sensor_ops = {
@@ -1235,6 +1236,7 @@ static const struct adv7180_chip_info adv7282_m_info = {
 		BIT(ADV7182_INPUT_SVIDEO_AIN1_AIN2) |
 		BIT(ADV7182_INPUT_SVIDEO_AIN3_AIN4) |
 		BIT(ADV7182_INPUT_SVIDEO_AIN7_AIN8) |
+		BIT(ADV7182_INPUT_YPRPB_AIN1_AIN2_AIN3) |
 		BIT(ADV7182_INPUT_DIFF_CVBS_AIN1_AIN2) |
 		BIT(ADV7182_INPUT_DIFF_CVBS_AIN3_AIN4) |
 		BIT(ADV7182_INPUT_DIFF_CVBS_AIN7_AIN8),
@@ -1246,6 +1248,7 @@ static const struct adv7180_chip_info adv7282_m_info = {
 static int init_device(struct adv7180_state *state)
 {
 	int ret;
+	int i;
 
 	mutex_lock(&state->mutex);
 
@@ -1290,6 +1293,18 @@ static int init_device(struct adv7180_state *state)
 		ret = adv7180_write(state, ADV7180_REG_IMR4, 0);
 		if (ret < 0)
 			goto out_unlock;
+	}
+
+	/* Select first valid input */
+	for (i = 0; i < 32; i++) {
+		if (BIT(i) & state->chip_info->valid_input_mask) {
+			ret = state->chip_info->select_input(state, i);
+
+			if (ret == 0) {
+				state->input = i;
+				break;
+			}
+		}
 	}
 
 out_unlock:

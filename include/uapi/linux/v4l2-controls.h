@@ -192,6 +192,16 @@ enum v4l2_colorfx {
  * We reserve 16 controls for this driver. */
 #define V4L2_CID_USER_IMX_BASE			(V4L2_CID_USER_BASE + 0x10b0)
 
+/*
+ * The base for the atmel isc driver controls.
+ * We reserve 32 controls for this driver.
+ */
+#define V4L2_CID_USER_ATMEL_ISC_BASE		(V4L2_CID_USER_BASE + 0x10c0)
+
+/* The base for the bcm2835-isp driver controls.
+ * We reserve 16 controls for this driver. */
+#define V4L2_CID_USER_BCM2835_ISP_BASE		(V4L2_CID_USER_BASE + 0x10e0)
+
 /* MPEG-class control IDs */
 /* The MPEG controls are applicable to all codec controls
  * and the 'MPEG' part of the define is historical */
@@ -850,6 +860,7 @@ enum v4l2_auto_n_preset_white_balance {
 	V4L2_WHITE_BALANCE_FLASH		= 7,
 	V4L2_WHITE_BALANCE_CLOUDY		= 8,
 	V4L2_WHITE_BALANCE_SHADE		= 9,
+	V4L2_WHITE_BALANCE_GREYWORLD		= 10,
 };
 
 #define V4L2_CID_WIDE_DYNAMIC_RANGE		(V4L2_CID_CAMERA_CLASS_BASE+21)
@@ -911,6 +922,13 @@ enum v4l2_auto_focus_range {
 
 #define V4L2_CID_PAN_SPEED			(V4L2_CID_CAMERA_CLASS_BASE+32)
 #define V4L2_CID_TILT_SPEED			(V4L2_CID_CAMERA_CLASS_BASE+33)
+
+#define V4L2_CID_CAMERA_ORIENTATION		(V4L2_CID_CAMERA_CLASS_BASE+34)
+#define V4L2_CAMERA_ORIENTATION_FRONT		0
+#define V4L2_CAMERA_ORIENTATION_BACK		1
+#define V4L2_CAMERA_ORIENTATION_EXTERNAL	2
+
+#define V4L2_CID_CAMERA_SENSOR_ROTATION		(V4L2_CID_CAMERA_CLASS_BASE+35)
 
 /* FM Modulator class control IDs */
 
@@ -1034,6 +1052,7 @@ enum v4l2_jpeg_chroma_subsampling {
 #define V4L2_CID_TEST_PATTERN_GREENR		(V4L2_CID_IMAGE_SOURCE_CLASS_BASE + 5)
 #define V4L2_CID_TEST_PATTERN_BLUE		(V4L2_CID_IMAGE_SOURCE_CLASS_BASE + 6)
 #define V4L2_CID_TEST_PATTERN_GREENB		(V4L2_CID_IMAGE_SOURCE_CLASS_BASE + 7)
+#define V4L2_CID_UNIT_CELL_SIZE			(V4L2_CID_IMAGE_SOURCE_CLASS_BASE + 8)
 
 
 /* Image processing controls */
