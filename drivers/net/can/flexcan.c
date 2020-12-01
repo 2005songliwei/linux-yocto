@@ -1578,6 +1578,10 @@ static int flexcan_open(struct net_device *dev)
 	if (err)
 		goto out_runtime_put;
 
+	err = flexcan_transceiver_enable(priv);
+	if (err)
+		goto out_close;
+
 	for (i = 0; i < priv->devtype_data->n_irqs; i++)
 		for (j = 0; j < M; j++)
 			if (priv->devtype_data->irqs[i].handler_mask & BIT(j)) {
@@ -1633,10 +1637,6 @@ static int flexcan_open(struct net_device *dev)
 
 	if (err)
 		goto out_free_irq;
-
-	err = request_irq(dev->irq, flexcan_irq, IRQF_SHARED, dev->name, dev);
-	if (err)
-		goto out_transceiver_disable;
 
 	priv->mb_size = sizeof(struct flexcan_mb) + CAN_MAX_DLEN;
 	priv->mb_count = (sizeof(priv->regs->mb[0]) / priv->mb_size) +
@@ -1697,6 +1697,8 @@ static int flexcan_open(struct net_device *dev)
 		    BIT(last % M))
 			free_irq(priv->irq_nos[last / M], dev);
 
+	flexcan_transceiver_disable(priv);
+ out_close:
 	close_candev(dev);
  out_runtime_put:
 	pm_runtime_put(priv->dev);
@@ -1719,6 +1721,8 @@ static int flexcan_close(struct net_device *dev)
 		for (j = 0; j < M; j++)
 			if (priv->devtype_data->irqs[i].handler_mask & BIT(j))
 				free_irq(priv->irq_nos[i], dev);
+
+	flexcan_transceiver_disable(priv);
 
 	close_candev(dev);
 	pm_runtime_put(priv->dev);
