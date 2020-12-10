@@ -56,6 +56,8 @@ obj-$(CONFIG_VIDEO_TEGRA_HDMI_CEC)	+= tegra-cec/
 
 obj-y					+= stm32/
 
+obj-$(CONFIG_VIDEO_MX8_CAPTURE)                += imx8/
+
 obj-$(CONFIG_VIDEO_SECO_CEC)		+= seco-cec/
 
 obj-y					+= davinci/
@@ -84,6 +86,9 @@ obj-$(CONFIG_VIDEO_ATMEL_ISI)		+= atmel/
 
 obj-$(CONFIG_VIDEO_STM32_DCMI)		+= stm32/
 
+obj-$(CONFIG_VIDEO_MXC_CAPTURE)                += mxc/capture/
+
+obj-$(CONFIG_VIDEO_MXC_OUTPUT)		+= mxc/output/
 obj-$(CONFIG_VIDEO_MEDIATEK_VPU)	+= mtk-vpu/
 
 obj-$(CONFIG_VIDEO_MEDIATEK_VCODEC)	+= mtk-vcodec/

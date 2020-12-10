@@ -965,7 +965,7 @@ struct cdns3_usb_regs {
 /*
  * USBSS-DEV DMA interface.
  */
-#define TRBS_PER_SEGMENT	40
+#define TRBS_PER_SEGMENT	600
 
 #define ISO_MAX_INTERVAL	10
 
@@ -1017,9 +1017,15 @@ struct cdns3_trb {
 /* Cycle bit - indicates TRB ownership by driver or hw*/
 #define TRB_CYCLE		BIT(0)
 /*
- * When set to '1', the device will toggle its interpretation of the Cycle bit
+ * When set to '1', the device will toggle its interpretation
+ * of the Cycle bit, this bit is for link TRB
  */
 #define TRB_TOGGLE		BIT(1)
+/*
+ * The controller will set it if OUTSMM (OUT size mismatch) is detected,
+ * this bit is for normal TRB
+ */
+#define TRB_SMM                        BIT(1)
 
 /*
  * Short Packet (SP). OUT EPs at DMULT=1 only. Indicates if the TRB was
@@ -1079,11 +1085,16 @@ struct cdns3_trb {
 #define CDNS3_EP_ZLP_BUF_SIZE		1024
 
 #define CDNS3_EP_BUF_SIZE		2	/* KB */
+#define CDNS3_UNALIGNED_BUF_SIZE       16384 /* Bytes */
 #define CDNS3_EP_ISO_HS_MULT		3
 #define CDNS3_EP_ISO_SS_BURST		3
 #define CDNS3_MAX_NUM_DESCMISS_BUF	32
 #define CDNS3_DESCMIS_BUF_SIZE		2048	/* Bytes */
 #define CDNS3_WA2_NUM_BUFFERS		128
+
+/* 18KB is the total size, and 2KB is used for EP0 and configuration */
+#define CDNS3_ONCHIP_BUF_SIZE  16      /* KB */
+#define CDNS3_EP_BUF_SIZE      2       /* KB */
 /*-------------------------------------------------------------------------*/
 /* Used structs */
 
@@ -1119,7 +1130,7 @@ struct cdns3_endpoint {
 	struct usb_ep		endpoint;
 	struct list_head	pending_req_list;
 	struct list_head	deferred_req_list;
-	struct list_head	wa2_descmiss_req_list;
+	struct list_head        descmiss_req_list;
 	int			wa2_counter;
 
 	struct cdns3_trb	*trb_pool;
@@ -1129,7 +1140,7 @@ struct cdns3_endpoint {
 	char			name[20];
 
 #define EP_ENABLED		BIT(0)
-#define EP_STALLED		BIT(1)
+#define EP_STALL                BIT(1)
 #define EP_STALL_PENDING	BIT(2)
 #define EP_WEDGE		BIT(3)
 #define EP_TRANSFER_STARTED	BIT(4)
@@ -1194,6 +1205,8 @@ struct cdns3_aligned_buf {
  *               this endpoint
  * @flags: flag specifying special usage of request
  * @list: used by internally allocated request to add to wa2_descmiss_req_list.
+ * @finished_trb: number of trb has already finished per request
+ * @num_of_trb: how many trbs in this request
  */
 struct cdns3_request {
 	struct usb_request		request;
@@ -1209,6 +1222,8 @@ struct cdns3_request {
 #define REQUEST_UNALIGNED		BIT(4)
 	u32				flags;
 	struct list_head		list;
+	int finished_trb;
+	int num_of_trb;
 };
 
 #define to_cdns3_request(r) (container_of(r, struct cdns3_request, request))
@@ -1277,7 +1292,7 @@ struct cdns3_device {
 	struct cdns3_endpoint		*eps[CDNS3_ENDPOINTS_MAX_COUNT];
 
 	struct list_head		aligned_buf_list;
-	struct work_struct		aligned_buf_wq;
+	unsigned                        run_garbage_colector:1;
 
 	u32				selected_ep;
 	u16				isoch_delay;
@@ -1294,10 +1309,11 @@ struct cdns3_device {
 
 	struct work_struct		pending_status_wq;
 	struct usb_request		*pending_status_request;
+	u32                             shadow_ep_en;
 
 	/*in KB */
-	u16				onchip_buffers;
-	u16				onchip_used_size;
+	int                             onchip_mem_allocated_size;
+	unsigned                        start_gadget:1;
 };
 
 void cdns3_set_register_bit(void __iomem *ptr, u32 mask);

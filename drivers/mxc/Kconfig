@@ -1,0 +1,17 @@
+# drivers/mxc/Kconfig
+
+if ARCH_MXC
+
+menu "MXC support drivers"
+
+source "drivers/mxc/gpu-viv/Kconfig"
+source "drivers/mxc/hantro_845/Kconfig"
+source "drivers/mxc/hantro_845_h1/Kconfig"
+source "drivers/mxc/hantro_vc8000e/Kconfig"
+source "drivers/mxc/vpu/Kconfig"
+source "drivers/mxc/hdmi-cec/Kconfig"
+source "drivers/mxc/xuvi/Kconfig"
+
+endmenu
+
+endif

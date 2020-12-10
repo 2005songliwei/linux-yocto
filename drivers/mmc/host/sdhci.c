@@ -109,6 +109,9 @@ void sdhci_dumpregs(struct sdhci_host *host)
 		}
 	}
 
+	if (host->ops->dump_vendor_regs)
+		host->ops->dump_vendor_regs(host);
+
 	SDHCI_DUMP("============================================\n");
 }
 EXPORT_SYMBOL_GPL(sdhci_dumpregs);
@@ -2147,6 +2150,11 @@ void sdhci_enable_sdio_irq(struct mmc_host *mmc, int enable)
 		pm_runtime_get_noresume(host->mmc->parent);
 
 	spin_lock_irqsave(&host->lock, flags);
+	if (enable)
+		host->flags |= SDHCI_SDIO_IRQ_ENABLED;
+	else
+		host->flags &= ~SDHCI_SDIO_IRQ_ENABLED;
+
 	sdhci_enable_sdio_irq_nolock(host, enable);
 	spin_unlock_irqrestore(&host->lock, flags);
 
@@ -2353,6 +2361,7 @@ void sdhci_send_tuning(struct sdhci_host *host, u32 opcode)
 	struct mmc_request mrq = {};
 	unsigned long flags;
 	u32 b = host->sdma_boundary;
+	u8 ctrl;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -2379,6 +2388,17 @@ void sdhci_send_tuning(struct sdhci_host *host, u32 opcode)
 	 * Select in the same register to 0.
 	 */
 	sdhci_writew(host, SDHCI_TRNS_READ, SDHCI_TRANSFER_MODE);
+
+	/*
+	 * DMA already disabled, so clear the DMA Select here.
+	 * Otherwise, if use ADMA2, even disable DMA, some
+	 * controllers like i.MX usdhc will still prefetch the
+	 * ADMA script when send tuning command, which will cause
+	 * IOMMU report lack of TLB mapping error
+	 */
+	ctrl = sdhci_readb(host, SDHCI_HOST_CONTROL);
+	ctrl &= ~SDHCI_CTRL_DMA_MASK;
+	sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
 
 	sdhci_send_command(host, &cmd);
 
@@ -3051,7 +3071,7 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 
 	spin_lock(&host->lock);
 
-	if (host->runtime_suspended) {
+	if (host->runtime_suspended && !sdhci_sdio_irq_enabled(host)) {
 		spin_unlock(&host->lock);
 		return IRQ_NONE;
 	}
@@ -3279,7 +3299,7 @@ int sdhci_suspend_host(struct sdhci_host *host)
 		host->ier = 0;
 		sdhci_writel(host, 0, SDHCI_INT_ENABLE);
 		sdhci_writel(host, 0, SDHCI_SIGNAL_ENABLE);
-		free_irq(host->irq, host);
+		disable_irq(host->irq);
 	}
 
 	return 0;
@@ -3290,7 +3310,6 @@ EXPORT_SYMBOL_GPL(sdhci_suspend_host);
 int sdhci_resume_host(struct sdhci_host *host)
 {
 	struct mmc_host *mmc = host->mmc;
-	int ret = 0;
 
 	if (host->flags & (SDHCI_USE_SDMA | SDHCI_USE_ADMA)) {
 		if (host->ops->enable_dma)
@@ -3311,16 +3330,12 @@ int sdhci_resume_host(struct sdhci_host *host)
 	if (host->irq_wake_enabled) {
 		sdhci_disable_irq_wakeups(host);
 	} else {
-		ret = request_threaded_irq(host->irq, sdhci_irq,
-					   sdhci_thread_irq, IRQF_SHARED,
-					   mmc_hostname(host->mmc), host);
-		if (ret)
-			return ret;
+		enable_irq(host->irq);
 	}
 
 	sdhci_enable_card_detection(host);
 
-	return ret;
+	return 0;
 }
 
 EXPORT_SYMBOL_GPL(sdhci_resume_host);
@@ -3385,7 +3400,7 @@ int sdhci_runtime_resume_host(struct sdhci_host *host, int soft_reset)
 	host->runtime_suspended = false;
 
 	/* Enable SDIO IRQ */
-	if (sdio_irq_claimed(mmc))
+	if (host->flags & SDHCI_SDIO_IRQ_ENABLED)
 		sdhci_enable_sdio_irq_nolock(host, true);
 
 	/* Enable Card Detection */
@@ -3723,6 +3738,7 @@ static inline bool sdhci_can_64bit_dma(struct sdhci_host *host)
 int sdhci_setup_host(struct sdhci_host *host)
 {
 	struct mmc_host *mmc;
+	struct device *dev;
 	u32 max_current_caps;
 	unsigned int ocr_avail;
 	unsigned int override_timeout_clk;
@@ -3734,6 +3750,7 @@ int sdhci_setup_host(struct sdhci_host *host)
 		return -EINVAL;
 
 	mmc = host->mmc;
+	dev = mmc_dev(mmc);
 
 	/*
 	 * If there are external regulators, get them. Note this must be done
@@ -3988,11 +4005,6 @@ int sdhci_setup_host(struct sdhci_host *host)
 	if (host->caps & SDHCI_CAN_DO_HISPD)
 		mmc->caps |= MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED;
 
-	if ((host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION) &&
-	    mmc_card_is_removable(mmc) &&
-	    mmc_gpio_get_cd(host->mmc) < 0)
-		mmc->caps |= MMC_CAP_NEEDS_POLL;
-
 	if (!IS_ERR(mmc->supply.vqmmc)) {
 		ret = regulator_enable(mmc->supply.vqmmc);
 
@@ -4209,10 +4221,19 @@ int sdhci_setup_host(struct sdhci_host *host)
 	 * be larger than 64 KiB though.
 	 */
 	if (host->flags & SDHCI_USE_ADMA) {
-		if (host->quirks & SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC)
+		if (host->quirks & SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC) {
 			mmc->max_seg_size = 65535;
-		else
+			/*
+			 * send the ADMA limitation to IOMMU. In default,
+			 * the max segment size of IOMMU is 64KB, this exceed
+			 * the ADMA max segment limitation, which is 65535.
+			 */
+			dev->dma_parms = devm_kzalloc(dev,
+			                sizeof(*dev->dma_parms), GFP_KERNEL);
+			dma_set_max_seg_size(dev, SZ_64K - 1);
+		} else {
 			mmc->max_seg_size = 65536;
+		}
 	} else {
 		mmc->max_seg_size = mmc->max_req_size;
 	}

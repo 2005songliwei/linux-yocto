@@ -172,6 +172,9 @@ config ARCH_MXC
 	select ARM64_ERRATUM_845719 if COMPAT
 	select IMX_GPCV2
 	select IMX_GPCV2_PM_DOMAINS
+	select HAVE_IMX_BUSFREQ
+	select IMX8M_BUSFREQ
+	select IMX8M_PM_DOMAINS
 	select PM
 	select PM_GENERIC_DOMAINS
 	select SOC_BUS
@@ -179,6 +182,9 @@ config ARCH_MXC
 	help
 	  This enables support for the ARMv8 based SoCs in the
 	  NXP i.MX family.
+
+config HAVE_IMX_BUSFREQ
+	bool "i.MX8M busfreq"
 
 config ARCH_QCOM
 	bool "Qualcomm Platforms"
@@ -212,6 +218,20 @@ config ARCH_ROCKCHIP
 	help
 	  This enables support for the ARMv8 based Rockchip chipsets,
 	  like the RK3368.
+
+config ARCH_S32
+	bool "NXP S32 SoC Family"
+	select PINCTRL
+	select ARCH_S32_CLK
+	help
+	  This enables support for the NXP S32 family of processors.
+
+if ARCH_S32
+menu "S32 SOC selection"
+	config SOC_S32V234
+		bool "S32V234 SOC"
+endmenu
+endif
 
 config ARCH_SEATTLE
 	bool "AMD Seattle SoC Family"
