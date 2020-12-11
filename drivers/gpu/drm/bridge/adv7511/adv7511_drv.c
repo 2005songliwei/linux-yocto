@@ -1330,10 +1330,12 @@ uninit_regulators:
 	of_changeset_init(&ocs);
 	of_changeset_detach_node(&ocs, endpoint);
 	ret = of_changeset_apply(&ocs);
-	if (!ret)
+	if (!ret) {
+		of_changeset_destroy(&ocs);
 		dev_warn(dev,
 			 "Probe failed. Remote port '%s' disabled\n",
 			 remote_node->full_name);
+	}
 #endif
 
 	return ret;
