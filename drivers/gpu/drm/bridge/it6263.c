@@ -980,10 +980,12 @@ of_reconfig:
 		of_changeset_init(&ocs);
 		of_changeset_update_property(&ocs, remote_node, prop);
 		ret = of_changeset_apply(&ocs);
-		if (!ret)
+		if (!ret) {
+			of_changeset_destroy(&ocs);
 			dev_warn(dev,
 				"Probe failed. Remote port '%s' disabled\n",
 				remote_node->full_name);
+		}
 
 		of_node_put(remote_node);
 	};
