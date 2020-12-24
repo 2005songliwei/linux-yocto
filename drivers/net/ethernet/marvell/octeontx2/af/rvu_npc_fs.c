@@ -30,6 +30,8 @@ static const char * const npc_flow_names[] = {
 	[NPC_DPORT_TCP]	= "tcp destination port",
 	[NPC_SPORT_UDP]	= "udp source port",
 	[NPC_DPORT_UDP]	= "udp destination port",
+	[NPC_SPORT_SCTP] = "sctp source port",
+	[NPC_DPORT_SCTP] = "sctp destination port",
 	[NPC_FDSA_VAL]	= "FDSA tag value ",
 	[NPC_UNKNOWN]	= "unknown",
 };
@@ -45,7 +47,7 @@ const char *npc_get_field_name(u8 hdr)
 /* Compute keyword masks and figure out the number of keywords a field
  * spans in the key.
  */
-static void npc_set_kw_masks(struct npc_mcam *mcam, enum key_fields type,
+static void npc_set_kw_masks(struct npc_mcam *mcam, u8 type,
 			     u8 nr_bits, int start_kwi, int offset, u8 intf)
 {
 	struct npc_key_field *field = &mcam->rx_key_fields[type];
@@ -66,7 +68,8 @@ static void npc_set_kw_masks(struct npc_mcam *mcam, enum key_fields type,
 		/* one KW only */
 		if (start_kwi > max_kwi)
 			return;
-		field->kw_mask[start_kwi] |= (BIT_ULL(nr_bits) - 1) << offset;
+		field->kw_mask[start_kwi] |= GENMASK_ULL(nr_bits - 1, 0)
+					     << offset;
 		field->nr_kws = 1;
 	} else if (offset + nr_bits > 64 &&
 		   offset + nr_bits <= 128) {
@@ -75,11 +78,11 @@ static void npc_set_kw_masks(struct npc_mcam *mcam, enum key_fields type,
 			return;
 		/* first KW mask */
 		bits_in_kw = 64 - offset;
-		field->kw_mask[start_kwi] |= (BIT_ULL(bits_in_kw) - 1)
-						<< offset;
+		field->kw_mask[start_kwi] |= GENMASK_ULL(bits_in_kw - 1, 0)
+					     << offset;
 		/* second KW mask i.e. mask for rest of bits */
 		bits_in_kw = nr_bits + offset - 64;
-		field->kw_mask[start_kwi + 1] |= BIT_ULL(bits_in_kw) - 1;
+		field->kw_mask[start_kwi + 1] |= GENMASK_ULL(bits_in_kw - 1, 0);
 		field->nr_kws = 2;
 	} else {
 		/* three KWs */
@@ -87,13 +90,13 @@ static void npc_set_kw_masks(struct npc_mcam *mcam, enum key_fields type,
 			return;
 		/* first KW mask */
 		bits_in_kw = 64 - offset;
-		field->kw_mask[start_kwi] |= (BIT_ULL(bits_in_kw) - 1)
-						<< offset;
+		field->kw_mask[start_kwi] |= GENMASK_ULL(bits_in_kw - 1, 0)
+					     << offset;
 		/* second KW mask */
 		field->kw_mask[start_kwi + 1] = ~0ULL;
 		/* third KW mask i.e. mask for rest of bits */
 		bits_in_kw = nr_bits + offset - 128;
-		field->kw_mask[start_kwi + 2] |= BIT_ULL(bits_in_kw) - 1;
+		field->kw_mask[start_kwi + 2] |= GENMASK_ULL(bits_in_kw - 1, 0);
 		field->nr_kws = 3;
 	}
 }
@@ -422,10 +425,14 @@ do {									       \
 	 */
 	NPC_SCAN_HDR(NPC_SIP_IPV4, NPC_LID_LC, NPC_LT_LC_IP, 12, 4);
 	NPC_SCAN_HDR(NPC_DIP_IPV4, NPC_LID_LC, NPC_LT_LC_IP, 16, 4);
+	NPC_SCAN_HDR(NPC_SIP_IPV6, NPC_LID_LC, NPC_LT_LC_IP6, 8, 16);
+	NPC_SCAN_HDR(NPC_DIP_IPV6, NPC_LID_LC, NPC_LT_LC_IP6, 24, 16);
 	NPC_SCAN_HDR(NPC_SPORT_UDP, NPC_LID_LD, NPC_LT_LD_UDP, 0, 2);
 	NPC_SCAN_HDR(NPC_DPORT_UDP, NPC_LID_LD, NPC_LT_LD_UDP, 2, 2);
 	NPC_SCAN_HDR(NPC_SPORT_TCP, NPC_LID_LD, NPC_LT_LD_TCP, 0, 2);
 	NPC_SCAN_HDR(NPC_DPORT_TCP, NPC_LID_LD, NPC_LT_LD_TCP, 2, 2);
+	NPC_SCAN_HDR(NPC_SPORT_SCTP, NPC_LID_LD, NPC_LT_LD_SCTP, 0, 2);
+	NPC_SCAN_HDR(NPC_DPORT_SCTP, NPC_LID_LD, NPC_LT_LD_SCTP, 2, 2);
 	NPC_SCAN_HDR(NPC_ETYPE_ETHER, NPC_LID_LA, NPC_LT_LA_ETHER, 12, 2);
 	NPC_SCAN_HDR(NPC_ETYPE_TAG1, NPC_LID_LB, NPC_LT_LB_CTAG, 4, 2);
 	NPC_SCAN_HDR(NPC_ETYPE_TAG2, NPC_LID_LB, NPC_LT_LB_STAG_QINQ, 8, 2);
@@ -442,7 +449,7 @@ static void npc_set_features(struct rvu *rvu, int blkaddr, u8 intf)
 {
 	struct npc_mcam *mcam = &rvu->hw->mcam;
 	u64 *features = &mcam->rx_features;
-	u64 tcp_udp;
+	u64 tcp_udp_sctp;
 	int err, hdr;
 
 	if (is_npc_intf_tx(intf))
@@ -454,13 +461,14 @@ static void npc_set_features(struct rvu *rvu, int blkaddr, u8 intf)
 			*features |= BIT_ULL(hdr);
 	}
 
-	tcp_udp = BIT_ULL(NPC_SPORT_TCP) | BIT_ULL(NPC_SPORT_UDP) |
-		  BIT_ULL(NPC_DPORT_TCP) | BIT_ULL(NPC_DPORT_UDP);
+	tcp_udp_sctp = BIT_ULL(NPC_SPORT_TCP) | BIT_ULL(NPC_SPORT_UDP) |
+		       BIT_ULL(NPC_DPORT_TCP) | BIT_ULL(NPC_DPORT_UDP) |
+		       BIT_ULL(NPC_SPORT_SCTP) | BIT_ULL(NPC_DPORT_SCTP);
 
-	/* for tcp/udp corresponding layer type should be in the key */
-	if (*features & tcp_udp)
+	/* for tcp/udp/sctp corresponding layer type should be in the key */
+	if (*features & tcp_udp_sctp)
 		if (npc_check_field(rvu, blkaddr, NPC_LD, intf))
-			*features &= ~tcp_udp;
+			*features &= ~tcp_udp_sctp;
 
 	/* for vlan corresponding layer type should be in the key */
 	if (*features & BIT_ULL(NPC_OUTER_VID) ||
@@ -629,11 +637,13 @@ static void npc_update_entry(struct rvu *rvu, enum key_fields type,
 		/* place remaining bits of key value in kw[x + 1] */
 		if (field->nr_kws == 2) {
 			/* update entry value */
-			kw2 = (val_lo >> (64 - shift)) | (val_hi << shift);
+			kw2 = shift ? val_lo >> (64 - shift) : 0;
+			kw2 |= (val_hi << shift);
 			kw2 &= field->kw_mask[i + 1];
 			dummy.kw[i + 1] = kw2;
 			/* update entry mask */
-			kw2 = (mask_lo >> (64 - shift)) | (mask_hi << shift);
+			kw2 = shift ? mask_lo >> (64 - shift) : 0;
+			kw2 |= (mask_hi << shift);
 			kw2 &= field->kw_mask[i + 1];
 			dummy.kw_mask[i + 1] = kw2;
 			break;
@@ -641,16 +651,18 @@ static void npc_update_entry(struct rvu *rvu, enum key_fields type,
 		/* place remaining bits of key value in kw[x + 1], kw[x + 2] */
 		if (field->nr_kws == 3) {
 			/* update entry value */
-			kw2 = (val_lo >> (64 - shift)) | (val_hi << shift);
+			kw2 = shift ? val_lo >> (64 - shift) : 0;
+			kw2 |= (val_hi << shift);
 			kw2 &= field->kw_mask[i + 1];
-			kw3 = (val_hi >> (64 - shift));
+			kw3 = shift ? val_hi >> (64 - shift) : 0;
 			kw3 &= field->kw_mask[i + 2];
 			dummy.kw[i + 1] = kw2;
 			dummy.kw[i + 2] = kw3;
 			/* update entry mask */
-			kw2 = (mask_lo >> (64 - shift)) | (mask_hi << shift);
+			kw2 = shift ? mask_lo >> (64 - shift) : 0;
+			kw2 |= (mask_hi << shift);
 			kw2 &= field->kw_mask[i + 1];
-			kw3 = (mask_hi >> (64 - shift));
+			kw3 = shift ? mask_hi >> (64 - shift) : 0;
 			kw3 &= field->kw_mask[i + 2];
 			dummy.kw_mask[i + 1] = kw2;
 			dummy.kw_mask[i + 2] = kw3;
@@ -668,6 +680,55 @@ static void npc_update_entry(struct rvu *rvu, enum key_fields type,
 
 		entry->kw[i] |= dummy.kw[i];
 		entry->kw_mask[i] |= dummy.kw_mask[i];
+	}
+}
+
+#define IPV6_WORDS     4
+
+static void npc_update_ipv6_flow(struct rvu *rvu, struct mcam_entry *entry,
+				 u64 features, struct flow_msg *pkt,
+				 struct flow_msg *mask,
+				 struct rvu_npc_mcam_rule *output, u8 intf)
+{
+	u32 src_ip[IPV6_WORDS], src_ip_mask[IPV6_WORDS];
+	u32 dst_ip[IPV6_WORDS], dst_ip_mask[IPV6_WORDS];
+	struct flow_msg *opkt = &output->packet;
+	struct flow_msg *omask = &output->mask;
+	u64 mask_lo, mask_hi;
+	u64 val_lo, val_hi;
+
+	/* For an ipv6 address fe80::2c68:63ff:fe5e:2d0a the packet
+	 * values to be programmed in MCAM should as below:
+	 * val_high: 0xfe80000000000000
+	 * val_low: 0x2c6863fffe5e2d0a
+	 */
+	if (features & BIT_ULL(NPC_SIP_IPV6)) {
+		be32_to_cpu_array(src_ip_mask, mask->ip6src, IPV6_WORDS);
+		be32_to_cpu_array(src_ip, pkt->ip6src, IPV6_WORDS);
+
+		mask_hi = (u64)src_ip_mask[0] << 32 | src_ip_mask[1];
+		mask_lo = (u64)src_ip_mask[2] << 32 | src_ip_mask[3];
+		val_hi = (u64)src_ip[0] << 32 | src_ip[1];
+		val_lo = (u64)src_ip[2] << 32 | src_ip[3];
+
+		npc_update_entry(rvu, NPC_SIP_IPV6, entry, val_lo, val_hi,
+				 mask_lo, mask_hi, intf);
+		memcpy(opkt->ip6src, pkt->ip6src, sizeof(opkt->ip6src));
+		memcpy(omask->ip6src, mask->ip6src, sizeof(omask->ip6src));
+	}
+	if (features & BIT_ULL(NPC_DIP_IPV6)) {
+		be32_to_cpu_array(dst_ip_mask, mask->ip6dst, IPV6_WORDS);
+		be32_to_cpu_array(dst_ip, pkt->ip6dst, IPV6_WORDS);
+
+		mask_hi = (u64)dst_ip_mask[0] << 32 | dst_ip_mask[1];
+		mask_lo = (u64)dst_ip_mask[2] << 32 | dst_ip_mask[3];
+		val_hi = (u64)dst_ip[0] << 32 | dst_ip[1];
+		val_lo = (u64)dst_ip[2] << 32 | dst_ip[3];
+
+		npc_update_entry(rvu, NPC_DIP_IPV6, entry, val_lo, val_hi,
+				 mask_lo, mask_hi, intf);
+		memcpy(opkt->ip6dst, pkt->ip6dst, sizeof(opkt->ip6dst));
+		memcpy(omask->ip6dst, mask->ip6dst, sizeof(omask->ip6dst));
 	}
 }
 
@@ -696,13 +757,17 @@ do {									      \
 	}								      \
 } while (0)
 
-	 /* For tcp/udp LTYPE should be present in entry */
+	 /* For tcp/udp/sctp LTYPE should be present in entry */
 	if (features & (BIT_ULL(NPC_SPORT_TCP) | BIT_ULL(NPC_DPORT_TCP)))
 		npc_update_entry(rvu, NPC_LD, entry, NPC_LT_LD_TCP,
 				 0, ~0ULL, 0, intf);
 	if (features & (BIT_ULL(NPC_SPORT_UDP) | BIT_ULL(NPC_DPORT_UDP)))
 		npc_update_entry(rvu, NPC_LD, entry, NPC_LT_LD_UDP,
 				 0, ~0ULL, 0, intf);
+	if (features & (BIT_ULL(NPC_SPORT_SCTP) | BIT_ULL(NPC_DPORT_SCTP)))
+		npc_update_entry(rvu, NPC_LD, entry, NPC_LT_LD_SCTP,
+				 0, ~0ULL, 0, intf);
+
 	if (features & BIT_ULL(NPC_OUTER_VID))
 		npc_update_entry(rvu, NPC_LB, entry,
 				 NPC_LT_LB_STAG_QINQ | NPC_LT_LB_CTAG, 0,
@@ -727,10 +792,17 @@ do {									      \
 		       ntohs(mask->dport), 0);
 	NPC_WRITE_FLOW(NPC_DPORT_UDP, dport, ntohs(pkt->dport), 0,
 		       ntohs(mask->dport), 0);
+	NPC_WRITE_FLOW(NPC_SPORT_SCTP, sport, ntohs(pkt->sport), 0,
+		       ntohs(mask->sport), 0);
+	NPC_WRITE_FLOW(NPC_DPORT_SCTP, dport, ntohs(pkt->dport), 0,
+		       ntohs(mask->dport), 0);
+
 	NPC_WRITE_FLOW(NPC_OUTER_VID, vlan_tci, ntohs(pkt->vlan_tci), 0,
 		       ntohs(mask->vlan_tci), 0);
 	NPC_WRITE_FLOW(NPC_FDSA_VAL, vlan_tci, ntohs(pkt->vlan_tci), 0,
 		       ntohs(mask->vlan_tci), 0);
+
+	npc_update_ipv6_flow(rvu, entry, features, pkt, mask, output, intf);
 }
 
 static struct rvu_npc_mcam_rule *rvu_mcam_find_rule(struct npc_mcam *mcam,

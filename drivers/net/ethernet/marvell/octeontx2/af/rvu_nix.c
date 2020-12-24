@@ -2806,6 +2806,24 @@ static int nix_af_mark_format_setup(struct rvu *rvu, struct nix_hw *nix_hw,
 	return 0;
 }
 
+int rvu_mbox_handler_nix_get_hw_info(struct rvu *rvu, struct msg_req *req,
+				     struct nix_hw_info *rsp)
+{
+	u16 pcifunc = req->hdr.pcifunc;
+	int blkaddr;
+
+	blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, pcifunc);
+	if (blkaddr < 0)
+		return NIX_AF_ERR_AF_LF_INVALID;
+
+	rsp->vwqe_delay = 0;
+	if (!is_rvu_otx2(rvu))
+		rsp->vwqe_delay = rvu_read64(rvu, blkaddr, NIX_AF_VWQE_TIMER) &
+				  GENMASK_ULL(9, 0);
+
+	return 0;
+}
+
 int rvu_mbox_handler_nix_stats_rst(struct rvu *rvu, struct msg_req *req,
 				   struct msg_rsp *rsp)
 {
@@ -2906,6 +2924,13 @@ static int set_flowkey_fields(struct nix_rx_flowkey_alg *alg, u32 flow_cfg)
 			field->sel_chan = true;
 			/* This should be set to 1, when SEL_CHAN is set */
 			field->bytesm1 = 1;
+			break;
+		case NIX_FLOW_KEY_TYPE_IPV4_PROTO:
+			field->lid = NPC_LID_LC;
+			field->hdr_offset = 9; /* offset */
+			field->bytesm1 = 0; /* 1 byte */
+			field->ltype_match = NPC_LT_LC_IP;
+			field->ltype_mask = 0xF;
 			break;
 		case NIX_FLOW_KEY_TYPE_IPV4:
 		case NIX_FLOW_KEY_TYPE_INNR_IPV4:

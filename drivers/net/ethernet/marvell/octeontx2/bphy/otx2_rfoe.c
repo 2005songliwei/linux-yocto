@@ -135,6 +135,7 @@ void otx2_bphy_rfoe_cleanup(void)
 				kfree(priv->ptp_cfg);
 				priv->ptp_cfg = NULL;
 			}
+			otx2_rfoe_ptp_destroy(priv);
 			unregister_netdev(netdev);
 			for (idx = 0; idx < PACKET_TYPE_MAX; idx++) {
 				if (!(priv->pkt_type_mask & (1U << idx)))
@@ -149,8 +150,7 @@ void otx2_bphy_rfoe_cleanup(void)
 	}
 }
 
-static void otx2_rfoe_calc_ptp_ts(struct otx2_rfoe_ndev_priv *priv,
-				  u64 *ts)
+void otx2_rfoe_calc_ptp_ts(struct otx2_rfoe_ndev_priv *priv, u64 *ts)
 {
 	u64 ptp_diff_nsec, ptp_diff_psec;
 	struct ptp_bcn_off_cfg *ptp_cfg;
@@ -188,7 +188,7 @@ static void otx2_rfoe_ptp_offset_timer(struct timer_list *t)
 	struct ptp_bcn_off_cfg *ptp_cfg = from_timer(ptp_cfg, t, ptp_timer);
 	u64 mio_ptp_ts, ptp_ts_diff, ptp_diff_nsec, ptp_diff_psec;
 	struct ptp_clk_cfg *clk_cfg = &ptp_cfg->clk_cfg;
-	unsigned long flags;
+	unsigned long expires, flags;
 
 	spin_lock_irqsave(&ptp_cfg->lock, flags);
 
@@ -207,8 +207,8 @@ static void otx2_rfoe_ptp_offset_timer(struct timer_list *t)
 
 	spin_unlock_irqrestore(&ptp_cfg->lock, flags);
 
-	ptp_cfg->ptp_timer.expires = jiffies + PTP_OFF_RESAMPLE_THRESH * HZ;
-	add_timer(&ptp_cfg->ptp_timer);
+	expires = jiffies + PTP_OFF_RESAMPLE_THRESH * HZ;
+	mod_timer(&ptp_cfg->ptp_timer, expires);
 }
 
 /* submit pending ptp tx requests */
@@ -219,13 +219,14 @@ static void otx2_rfoe_ptp_submit_work(struct work_struct *work)
 						ptp_queue_work);
 	struct mhbw_jd_dma_cfg_word_0_s *jd_dma_cfg_word_0;
 	struct mhbw_jd_dma_cfg_word_1_s *jd_dma_cfg_word_1;
-	struct ptp_tstamp_skb *ts_skb, *ts_skb2;
 	struct mhab_job_desc_cfg *jd_cfg_ptr;
 	struct psm_cmd_addjob_s *psm_cmd_lo;
-	u16 psm_queue_id, queue_space;
 	struct tx_job_queue_cfg *job_cfg;
 	struct tx_job_entry *job_entry;
+	struct ptp_tstamp_skb *ts_skb;
+	u16 psm_queue_id, queue_space;
 	struct sk_buff *skb = NULL;
+	struct list_head *head;
 	u64 jd_cfg_ptr_iova;
 	unsigned long flags;
 	u64 regval;
@@ -251,15 +252,21 @@ static void otx2_rfoe_ptp_submit_work(struct work_struct *work)
 		/* reschedule to check later */
 		spin_unlock_irqrestore(&job_cfg->lock, flags);
 		schedule_work(&priv->ptp_queue_work);
+		return;
 	}
 
-	list_for_each_entry_safe(ts_skb, ts_skb2,
-				 &priv->ptp_skb_list.list, list) {
-		skb = ts_skb->skb;
-		list_del(&ts_skb->list);
-		kfree(ts_skb);
-		priv->ptp_skb_list.count--;
+	if (test_and_set_bit_lock(PTP_TX_IN_PROGRESS, &priv->state)) {
+		netif_dbg(priv, tx_queued, priv->netdev, "ptp tx ongoing\n");
+		spin_unlock_irqrestore(&job_cfg->lock, flags);
+		return;
 	}
+
+	head = &priv->ptp_skb_list.list;
+	ts_skb = list_entry(head->next, struct ptp_tstamp_skb, list);
+	skb = ts_skb->skb;
+	list_del(&ts_skb->list);
+	kfree(ts_skb);
+	priv->ptp_skb_list.count--;
 
 	netif_dbg(priv, tx_queued, priv->netdev,
 		  "submitting ptp tx skb %pS\n", skb);
@@ -1015,6 +1022,7 @@ static int otx2_rfoe_eth_open(struct net_device *netdev)
 	netif_start_queue(netdev);
 
 	clear_bit(RFOE_INTF_DOWN, &priv->state);
+	priv->link_state = 1;
 
 	return 0;
 }
@@ -1031,6 +1039,7 @@ static int otx2_rfoe_eth_stop(struct net_device *netdev)
 
 	netif_stop_queue(netdev);
 	netif_carrier_off(netdev);
+	priv->link_state = 0;
 
 	for (idx = 0; idx < PACKET_TYPE_MAX; idx++) {
 		if (!(priv->pkt_type_mask & (1U << idx)))
@@ -1307,6 +1316,7 @@ int otx2_rfoe_parse_and_init_intf(struct otx2_bphy_cdev_priv *cdev,
 				 "rfoe%d", intf_idx);
 			netdev->netdev_ops = &otx2_rfoe_netdev_ops;
 			otx2_rfoe_set_ethtool_ops(netdev);
+			otx2_rfoe_ptp_init(priv);
 			netdev->watchdog_timeo = (15 * HZ);
 			netdev->mtu = 1500U;
 			netdev->min_mtu = ETH_MIN_MTU;
@@ -1326,6 +1336,7 @@ int otx2_rfoe_parse_and_init_intf(struct otx2_bphy_cdev_priv *cdev,
 			netif_carrier_off(netdev);
 			netif_stop_queue(netdev);
 			set_bit(RFOE_INTF_DOWN, &priv->state);
+			priv->link_state = 0;
 
 			/* initialize global ctx */
 			drv_ctx = &rfoe_drv_ctx[intf_idx];
@@ -1346,6 +1357,7 @@ err_exit:
 		if (drv_ctx->valid) {
 			netdev = drv_ctx->netdev;
 			priv = netdev_priv(netdev);
+			otx2_rfoe_ptp_destroy(priv);
 			unregister_netdev(netdev);
 			for (idx = 0; idx < PACKET_TYPE_MAX; idx++) {
 				if (!(priv->pkt_type_mask & (1U << idx)))
