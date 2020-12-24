@@ -86,7 +86,7 @@ struct mbox_msghdr {
 #define OTX2_MBOX_REQ_SIG (0xdead)
 #define OTX2_MBOX_RSP_SIG (0xbeef)
 	u16 sig;         /* Signature, for validating corrupted msgs */
-#define OTX2_MBOX_VERSION (0x0009)
+#define OTX2_MBOX_VERSION (0x000a)
 	u16 ver;         /* Version of msg's structure for this ID */
 	u16 next_msgoff; /* Offset of next msg within mailbox region */
 	int rc;          /* Msg process'ed response code */
@@ -309,7 +309,8 @@ M(NIX_GET_MAC_ADDR, 0x8018, nix_get_mac_addr, msg_req, nix_get_mac_addr_rsp) \
 M(NIX_INLINE_IPSEC_CFG, 0x8019, nix_inline_ipsec_cfg,			\
 				nix_inline_ipsec_cfg, msg_rsp)		\
 M(NIX_INLINE_IPSEC_LF_CFG, 0x801a, nix_inline_ipsec_lf_cfg,		\
-				nix_inline_ipsec_lf_cfg, msg_rsp)
+				nix_inline_ipsec_lf_cfg, msg_rsp)	\
+M(NIX_GET_HW_INFO,	0x801c, nix_get_hw_info, msg_req, nix_hw_info)
 
 /* Messages initiated by AF (range 0xC00 - 0xDFF) */
 #define MBOX_UP_CGX_MESSAGES						\
@@ -429,17 +430,17 @@ struct msix_offset_rsp {
 	struct mbox_msghdr hdr;
 	u16  npa_msixoff;
 	u16  nix_msixoff;
-	u8   sso;
-	u8   ssow;
-	u8   timlfs;
-	u8   cptlfs;
+	u16  sso;
+	u16  ssow;
+	u16  timlfs;
+	u16  cptlfs;
 	u16  sso_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  ssow_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  timlf_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  cptlf_msixoff[MAX_RVU_BLKLF_CNT];
-	u8   cpt1_lfs;
-	u8   ree0_lfs;
-	u8   ree1_lfs;
+	u16  cpt1_lfs;
+	u16  ree0_lfs;
+	u16  ree1_lfs;
 	u16  cpt1_lf_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  ree0_lf_msixoff[MAX_RVU_BLKLF_CNT];
 	u16  ree1_lf_msixoff[MAX_RVU_BLKLF_CNT];
@@ -615,6 +616,7 @@ struct cgx_set_link_mode_args {
 };
 
 struct cgx_set_link_mode_req {
+#define AUTONEG_UNKNOWN		0xff
 	struct mbox_msghdr hdr;
 	struct cgx_set_link_mode_args args;
 };
@@ -960,6 +962,7 @@ struct nix_rss_flowkey_cfg {
 #define NIX_FLOW_KEY_TYPE_CH_LEN_90B    BIT(18)
 #define NIX_FLOW_KEY_TYPE_CUSTOM0	BIT(19)
 #define NIX_FLOW_KEY_TYPE_VLAN		BIT(20)
+#define NIX_FLOW_KEY_TYPE_IPV4_PROTO	BIT(21)
 #define NIX_FLOW_KEY_TYPE_L4_DST_ONLY BIT(28)
 #define NIX_FLOW_KEY_TYPE_L4_SRC_ONLY BIT(29)
 #define NIX_FLOW_KEY_TYPE_L3_DST_ONLY BIT(30)
@@ -1092,6 +1095,12 @@ struct nix_inline_ipsec_lf_cfg {
 		u8 sa_idx_w;
 	} ipsec_cfg1;
 	u8 enable;
+};
+
+struct nix_hw_info {
+	struct mbox_msghdr hdr;
+	u16 vwqe_delay;
+	u16 rsvd[15];
 };
 
 /* SSO mailbox error codes
@@ -1382,6 +1391,8 @@ enum header_fields {
 	NPC_DPORT_TCP,
 	NPC_SPORT_UDP,
 	NPC_DPORT_UDP,
+	NPC_SPORT_SCTP,
+	NPC_DPORT_SCTP,
 	NPC_FDSA_VAL,
 	NPC_HEADER_FIELDS_MAX,
 };
